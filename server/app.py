@@ -1,0 +1,494 @@
+from flask import Flask, request, jsonify
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import google.generativeai as genai
+import os
+import time
+import threading
+import schedule
+import re
+from datetime import datetime, timedelta
+
+from utils.vnexpress import crawl_vnexpress_article
+from utils.dantri import crawl_dantri_article
+from utils.tuoitre import crawl_tuoitre_article
+from utils.thanhnien import crawl_thanhnien_article
+
+app = Flask(__name__)
+
+# Cấu hình Gemini API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU")
+genai.configure(api_key=GEMINI_API_KEY)
+
+def connect_to_mongodb():
+    try:
+        client = MongoClient("mongodb+srv://Death:DeathA_1205@death.8wudq.mongodb.net/ThayUy?retryWrites=true&w=majority&appName=Death")
+        client.admin.command('ping')
+        print("MongoDB conneted")
+        db = client['CoLy']
+        return db
+    except ConnectionFailure as e:
+        print(f"Không thể kết nối với MongoDB: {e}")
+        return None
+
+def summarize_content(content, max_sentences=12): #GeminiAPI
+    if not content or len(content.strip()) < 80:
+        return None
+    
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = (
+            f"Tóm tắt nội dung sau thành tối đa {max_sentences} câu, sao cho vẫn đảm bảo có thể bao quát được toàn bộ nội dung và giữ được các thông tin quan trọng, nếu là tiếng nươc ngoài thì hãy dịch ra tiếng việt sao cho phù hợp, đặc biệt là phù hợp với người đọc báo:\n\n"
+            f"{content}"
+        )
+        response = model.generate_content(prompt)
+        summary = response.text.strip()
+        return summary if summary else None
+    
+    except Exception as e:
+        print(f"Error summarizing content: {e}")
+        return None
+
+def create_collection_with_ttl(db, collection_name): #collection tu dong xoa sau 3 ngay
+    collection = db[collection_name]
+    collection.create_index("crawled_at", expireAfterSeconds=259200) #tinh bang giay
+    return collection
+
+
+def crawl_google_news(keyword): #crawl RSS
+    url = f"https://news.google.com/rss/search?q={keyword}&hl=vi&gl=VN&ceid=VN:vi"
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument(f"--user-data-dir=/tmp/chrome-data-{int(time.time())}")
+    driver = webdriver.Chrome(options=chrome_options)
+    
+    try:
+        driver.get(url)
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        page_content = driver.page_source
+        soup = BeautifulSoup(page_content, 'xml')
+        items = soup.find_all('item')
+        news_data = []
+        
+        for item in items:
+            news_item = {
+                'title': item.find('title').text if item.find('title') else None,
+                'link': item.find('link').text if item.find('link') else None,
+                'pub_date': item.find('pubDate').text if item.find('pubDate') else None,
+                'description': item.find('description').text if item.find('description') else None,
+                'source': item.find('source').text if item.find('source') else None,
+                'source_url': item.find('source')['url'] if item.find('source') and item.find('source').has_attr('url') else None
+            }
+            news_data.append(news_item)
+        
+        return news_data, driver
+    
+    except Exception as e:
+        print(f"Error occurred while crawling RSS: {e}")
+        return None, driver
+
+def get_real_url_after_redirect(driver, google_news_url): #lay URL thuc de thuc hien soup
+    try:
+        driver.get(google_news_url)
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        
+        try:
+            links = driver.find_elements(By.TAG_NAME, "a")
+            if links and len(links) > 0:
+                for link in links:
+                    href = link.get_attribute('href')
+                    if href and 'news.google.com' not in href:
+                        link.click()
+                        WebDriverWait(driver, 20).until(
+                            EC.presence_of_element_located((By.TAG_NAME, "body"))
+                        )
+                        break
+        except Exception as e:
+            print(f"Lỗi khi thử click vào link: {e}")
+            
+        time.sleep(5)
+        
+        current_url = driver.current_url
+        
+        if 'news.google.com' not in current_url:
+            return current_url
+        
+        html = driver.page_source
+        canonical_match = re.search(r'<link\s+rel=["\']canonical["\']\s+href=["\'](.*?)["\']', html, re.IGNORECASE)
+        if canonical_match:
+            canonical_url = canonical_match.group(1)
+            if canonical_url and 'news.google.com' not in canonical_url:
+                return canonical_url
+        
+        og_url_match = re.search(r'<meta\s+property=["\']og:url["\']\s+content=["\'](.*?)["\']', html, re.IGNORECASE)
+        if og_url_match:
+            og_url = og_url_match.group(1)
+            if og_url and 'news.google.com' not in og_url:
+                return og_url
+                
+        # canonical_element = driver.find_elements(By.CSS_SELECTOR, "link[rel='canonical']")
+        # if canonical_element and len(canonical_element) > 0:
+        #     canonical_url = canonical_element[0].get_attribute('href')
+        #     if canonical_url and 'news.google.com' not in canonical_url:
+        #         return canonical_url
+        
+        # og_url_element = driver.find_elements(By.CSS_SELECTOR, "meta[property='og:url']")
+        # if og_url_element and len(og_url_element) > 0:
+        #     og_url = og_url_element[0].get_attribute('content')
+        #     if og_url and 'news.google.com' not in og_url:
+        #         return og_url
+
+        # try:
+        #     iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        #     if iframes and len(iframes) > 0:
+        #         for i, iframe in enumerate(iframes):
+        #             try:
+        #                 driver.switch_to.frame(iframe)
+                        
+        #                 # Tìm thẻ canonical trong iframe
+        #                 canonical_in_iframe = driver.find_elements(By.CSS_SELECTOR, "link[rel='canonical']")
+        #                 if canonical_in_iframe and len(canonical_in_iframe) > 0:
+        #                     canonical_url = canonical_in_iframe[0].get_attribute('href')
+        #                     if canonical_url and 'news.google.com' not in canonical_url:
+        #                         driver.switch_to.default_content()
+        #                         return canonical_url
+                        
+        #                 driver.switch_to.default_content()
+        #             except Exception as e:
+        #                 driver.switch_to.default_content()
+        # except Exception as e:
+        #     pass
+                            
+        # # Kiểm tra nếu có thẻ a với href không phải Google News
+        # links = driver.find_elements(By.TAG_NAME, "a")
+        # if links and len(links) > 0:
+        #     for link in links:
+        #         try:
+        #             href = link.get_attribute('href')
+        #             if href and 'news.google.com' not in href and 'accounts.google.com' not in href:
+        #                 return href
+        #         except:
+        #             continue
+        
+        # Trả về URL hiện tại nếu không tìm thấy URL nào khác
+        return current_url
+        
+    except Exception as e:
+        print(f"Lỗi khi truy cập URL {google_news_url}: {e}")
+        return None
+
+def visit_article_links(news_data, driver, collection):
+    """
+    Truy cập từng liên kết bài báo và crawl nội dung.
+    """
+    for item in news_data:
+        link = item['link']
+        title = item['title']
+        pubDate = item['pub_date']
+        if not link:
+            continue
+        
+        try:
+            print(f"Đang truy cập: {link}")
+            
+            # Lấy URL thực sau khi chuyển hướng
+            real_url = get_real_url_after_redirect(driver, link)
+            if not real_url:
+                print(f"Không thể lấy URL thực từ: {link}")
+                continue
+                
+            print(f"URL thực: {real_url}")
+            
+            # Xác định nguồn dựa trên URL thực
+            source_type = None
+            if 'vnexpress.net' in real_url:
+                article_data = crawl_vnexpress_article(real_url, driver, title, pubDate)
+                source_type = 'vnexpress'
+            elif 'dantri.com.vn' in real_url:
+                article_data = crawl_dantri_article(real_url, driver, title, pubDate)
+                source_type = 'dantri'
+            elif 'tuoitre.vn' in real_url:
+                article_data = crawl_tuoitre_article(real_url, driver, title, pubDate)
+                source_type = 'tuoitre'
+            elif 'thanhnien.vn' in real_url:
+                article_data = crawl_thanhnien_article(real_url, driver, title, pubDate)
+                source_type = 'thanhnien'
+            else:
+                print(f"Không hỗ trợ nguồn: {real_url}")
+                continue
+            
+            # Cập nhật thông tin nguồn
+            if article_data and 'error' not in article_data:
+                article_data['original_link'] = link
+                article_data['real_link'] = real_url
+                article_data['source_url'] = real_url
+                if source_type:
+                    article_data['source'] = source_type
+            
+            if collection is not None and article_data:
+                collection.insert_one(article_data)
+            
+            time.sleep(5)
+            
+        except Exception as e:
+            print(f"Lỗi khi xử lý bài báo từ {link}: {e}")
+
+def crawl_in_background(keyword, db):
+    """
+    Chạy crawl trong luồng nền và lưu vào collection riêng của từ khóa.
+    """
+    collection = create_collection_with_ttl(db, keyword)
+    driver = None
+    try:
+        news_data, driver = crawl_google_news(keyword)
+        if news_data:
+            visit_article_links(news_data, driver, collection)
+    except Exception as e:
+        print(f"Lỗi khi crawl tin tức cho từ khóa {keyword}: {e}")
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
+
+def cleanup_collections():
+    """
+    Xóa collection nếu không có cập nhật mới trong 2 ngày.
+    """
+    db = connect_to_mongodb()
+    if db is None:
+        print("Không thể kết nối đến MongoDB để dọn dẹp collections")
+        return
+    
+    keywords_collection = db['keywords']
+    keywords = [k['keyword'] for k in keywords_collection.find()]
+    
+    for keyword in keywords:
+        collection = db[keyword]
+        latest_article = collection.find_one(sort=[('crawled_at', -1)])
+        
+        if latest_article:
+            latest_time = latest_article['crawled_at']
+            if datetime.utcnow() - latest_time > timedelta(days=2):
+                print(f"Drop collection {keyword} vì không có cập nhật trong 2 ngày.")
+                db.drop_collection(keyword)
+                keywords_collection.delete_one({'keyword': keyword})
+        else:
+            print(f"Drop collection {keyword} vì không có dữ liệu.")
+            db.drop_collection(keyword)
+            keywords_collection.delete_one({'keyword': keyword})
+
+def crawl_all_keywords():
+    """
+    Crawl bài báo cho tất cả từ khóa trong collection keywords.
+    """
+    db = connect_to_mongodb()
+    if db is None:
+        print("Không thể kết nối đến MongoDB để crawl tất cả từ khóa")
+        return
+    
+    keywords_collection = db['keywords']
+    keywords = [k['keyword'] for k in keywords_collection.find()]
+    
+    for keyword in keywords:
+        print(f"Crawl theo lịch cho từ khóa: {keyword}")
+        threading.Thread(target=crawl_in_background, args=(keyword, db)).start()
+
+def schedule_tasks():
+    """
+    Lập lịch crawl và cleanup.
+    """
+    # Crawl hàng ngày lúc 8:00 sáng
+    schedule.every().day.at("08:00").do(crawl_all_keywords)
+    # Cleanup collection lúc 2:00 sáng
+    schedule.every().day.at("02:00").do(cleanup_collections)
+    
+    # Chạy lịch trong luồng nền
+    def run_schedule():
+        while True:
+            schedule.run_pending()
+            time.sleep(60)
+    
+    threading.Thread(target=run_schedule, daemon=True).start()
+
+@app.route('/api/keywords', methods=['GET'])
+def get_keywords():
+    """
+    Lấy danh sách từ khóa từ collection keywords.
+    """
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    keywords_collection = db['keywords']
+    keywords = [k['keyword'] for k in keywords_collection.find()]
+    return jsonify({'keywords': keywords})
+
+@app.route('/api/keywords', methods=['POST'])
+def add_keyword():
+    """
+    Thêm từ khóa mới vào collection keywords và tạo collection riêng.
+    """
+    data = request.get_json()
+    keyword = data.get('keyword')
+    
+    if not keyword:
+        return jsonify({'error': 'Từ khóa không hợp lệ'}), 400
+    
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    keywords_collection = db['keywords']
+    if keywords_collection.find_one({'keyword': keyword}):
+        return jsonify({'message': f'Từ khóa "{keyword}" đã tồn tại'}), 200
+    
+    keywords_collection.insert_one({'keyword': keyword})
+    create_collection_with_ttl(db, keyword)  # Tạo collection với TTL
+    
+    return jsonify({'message': f'Đã thêm từ khóa "{keyword}"'}), 200
+
+@app.route('/api/keywords/<keyword>', methods=['DELETE'])
+def delete_keyword(keyword):
+    """
+    Xóa từ khóa và collection tương ứng.
+    """
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    keywords_collection = db['keywords']
+    result = keywords_collection.delete_one({'keyword': keyword})
+    
+    if result.deleted_count > 0:
+        db.drop_collection(keyword)  # Xóa collection của từ khóa
+        return jsonify({'message': f'Đã xóa từ khóa "{keyword}" và collection tương ứng'}), 200
+    return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
+
+@app.route('/api/crawl', methods=['POST'])
+def start_crawl():
+    """
+    Kích hoạt crawl bài báo dựa trên từ khóa.
+    """
+    data = request.get_json()
+    keyword = data.get('keyword')
+    
+    if not keyword:
+        return jsonify({'error': 'Từ khóa không hợp lệ'}), 400
+    
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    keywords_collection = db['keywords']
+    if not keywords_collection.find_one({'keyword': keyword}):
+        return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
+    
+    # Chạy crawl trong luồng nền
+    threading.Thread(target=crawl_in_background, args=(keyword, db)).start()
+    
+    return jsonify({'message': f'Đã bắt đầu crawl cho từ khóa "{keyword}"'}), 200
+
+@app.route('/api/articles', methods=['GET'])
+def get_articles():
+    """
+    Lấy danh sách bài báo từ collection của từ khóa, hỗ trợ lọc theo nguồn.
+    """
+    keyword = request.args.get('keyword')
+    source = request.args.get('source')
+    
+    if not keyword:
+        return jsonify({'error': 'Yêu cầu cung cấp từ khóa'}), 400
+    
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    keywords_collection = db['keywords']
+    if not keywords_collection.find_one({'keyword': keyword}):
+        return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
+    
+    collection = db[keyword]
+    
+    query = {}
+    if source:
+        query['source'] = source
+    
+    articles = list(collection.find(query, {
+        '_id': 0,
+        'title': 1,
+        'link': 1,
+        'description': 1,
+        'pub_date': 1,
+        'content': 1,
+        'text_content': 1,
+        'source': 1,
+        'summary': 1,
+        'crawled_at': 1
+    }).sort('crawled_at', -1).limit(50))
+    
+    return jsonify({'articles': articles})
+
+@app.route('/api/daily-report', methods=['GET'])
+def get_daily_report():
+    """
+    Tạo báo cáo hàng ngày từ tất cả các tin tức đã crawl.
+    """
+    keyword = request.args.get('keyword')
+    
+    if not keyword:
+        return jsonify({'error': 'Yêu cầu cung cấp từ khóa'}), 400
+    
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    keywords_collection = db['keywords']
+    if not keywords_collection.find_one({'keyword': keyword}):
+        return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
+    
+    collection = db[keyword]
+    
+    # Lấy các bài báo trong ngày hiện tại
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    articles = list(collection.find({
+        'crawled_at': {'$gte': today}
+    }, {
+        '_id': 0,
+        'title': 1,
+        'link': 1,
+        'description': 1,
+        'summary': 1,
+        'source': 1
+    }).sort('crawled_at', -1))
+    
+    # Tạo báo cáo
+    report = {
+        'keyword': keyword,
+        'date': datetime.utcnow().strftime('%Y-%m-%d'),
+        'total_articles': len(articles),
+        'articles': articles
+    }
+    
+    return jsonify(report)
+
+if __name__ == '__main__':
+    schedule_tasks()
+    app.run(debug=True, host='0.0.0.0', port=5000)
