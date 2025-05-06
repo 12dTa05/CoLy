@@ -65,13 +65,15 @@ def crawl_google_news(keyword): #crawl RSS
     url = f"https://news.google.com/rss/search?q={keyword}&hl=vi&gl=VN&ceid=VN:vi"
 
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    # chrome_options.add_argument("--headless")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument(f"--user-data-dir=/tmp/chrome-data-{int(time.time())}")
+    chrome_options.add_argument("--dns-prefetch-disable")
+    chrome_options.add_argument("--host-resolver-rules='MAP * 8.8.8.8, EXCLUDE localhost'")
     driver = webdriver.Chrome(options=chrome_options)
     
     try:
@@ -142,49 +144,49 @@ def get_real_url_after_redirect(driver, google_news_url): #lay URL thuc de thuc 
             if og_url and 'news.google.com' not in og_url:
                 return og_url
                 
-        # canonical_element = driver.find_elements(By.CSS_SELECTOR, "link[rel='canonical']")
-        # if canonical_element and len(canonical_element) > 0:
-        #     canonical_url = canonical_element[0].get_attribute('href')
-        #     if canonical_url and 'news.google.com' not in canonical_url:
-        #         return canonical_url
+        canonical_element = driver.find_elements(By.CSS_SELECTOR, "link[rel='canonical']")
+        if canonical_element and len(canonical_element) > 0:
+            canonical_url = canonical_element[0].get_attribute('href')
+            if canonical_url and 'news.google.com' not in canonical_url:
+                return canonical_url
         
-        # og_url_element = driver.find_elements(By.CSS_SELECTOR, "meta[property='og:url']")
-        # if og_url_element and len(og_url_element) > 0:
-        #     og_url = og_url_element[0].get_attribute('content')
-        #     if og_url and 'news.google.com' not in og_url:
-        #         return og_url
+        og_url_element = driver.find_elements(By.CSS_SELECTOR, "meta[property='og:url']")
+        if og_url_element and len(og_url_element) > 0:
+            og_url = og_url_element[0].get_attribute('content')
+            if og_url and 'news.google.com' not in og_url:
+                return og_url
 
-        # try:
-        #     iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        #     if iframes and len(iframes) > 0:
-        #         for i, iframe in enumerate(iframes):
-        #             try:
-        #                 driver.switch_to.frame(iframe)
+        try:
+            iframes = driver.find_elements(By.TAG_NAME, "iframe")
+            if iframes and len(iframes) > 0:
+                for i, iframe in enumerate(iframes):
+                    try:
+                        driver.switch_to.frame(iframe)
                         
-        #                 # Tìm thẻ canonical trong iframe
-        #                 canonical_in_iframe = driver.find_elements(By.CSS_SELECTOR, "link[rel='canonical']")
-        #                 if canonical_in_iframe and len(canonical_in_iframe) > 0:
-        #                     canonical_url = canonical_in_iframe[0].get_attribute('href')
-        #                     if canonical_url and 'news.google.com' not in canonical_url:
-        #                         driver.switch_to.default_content()
-        #                         return canonical_url
+                        # Tìm thẻ canonical trong iframe
+                        canonical_in_iframe = driver.find_elements(By.CSS_SELECTOR, "link[rel='canonical']")
+                        if canonical_in_iframe and len(canonical_in_iframe) > 0:
+                            canonical_url = canonical_in_iframe[0].get_attribute('href')
+                            if canonical_url and 'news.google.com' not in canonical_url:
+                                driver.switch_to.default_content()
+                                return canonical_url
                         
-        #                 driver.switch_to.default_content()
-        #             except Exception as e:
-        #                 driver.switch_to.default_content()
-        # except Exception as e:
-        #     pass
+                        driver.switch_to.default_content()
+                    except Exception as e:
+                        driver.switch_to.default_content()
+        except Exception as e:
+            pass
                             
-        # # Kiểm tra nếu có thẻ a với href không phải Google News
-        # links = driver.find_elements(By.TAG_NAME, "a")
-        # if links and len(links) > 0:
-        #     for link in links:
-        #         try:
-        #             href = link.get_attribute('href')
-        #             if href and 'news.google.com' not in href and 'accounts.google.com' not in href:
-        #                 return href
-        #         except:
-        #             continue
+        # Kiểm tra nếu có thẻ a với href không phải Google News
+        links = driver.find_elements(By.TAG_NAME, "a")
+        if links and len(links) > 0:
+            for link in links:
+                try:
+                    href = link.get_attribute('href')
+                    if href and 'news.google.com' not in href:
+                        return href
+                except:
+                    continue
         
         # Trả về URL hiện tại nếu không tìm thấy URL nào khác
         return current_url
@@ -217,18 +219,19 @@ def visit_article_links(news_data, driver, collection):
             
             # Xác định nguồn dựa trên URL thực
             source_type = None
-            if 'vnexpress.net' in real_url:
-                article_data = crawl_vnexpress_article(real_url, driver, title, pubDate)
-                source_type = 'vnexpress'
-            elif 'dantri.com.vn' in real_url:
-                article_data = crawl_dantri_article(real_url, driver, title, pubDate)
-                source_type = 'dantri'
-            elif 'tuoitre.vn' in real_url:
-                article_data = crawl_tuoitre_article(real_url, driver, title, pubDate)
-                source_type = 'tuoitre'
-            elif 'thanhnien.vn' in real_url:
-                article_data = crawl_thanhnien_article(real_url, driver, title, pubDate)
-                source_type = 'thanhnien'
+            source_mapping = {
+                'vnexpress.net': ('vnexpress', crawl_vnexpress_article),
+                'dantri.com.vn': ('dantri', crawl_dantri_article),
+                'tuoitre.vn': ('tuoitre', crawl_tuoitre_article),
+                'thanhnien.vn': ('thanhnien', crawl_thanhnien_article),
+                'baochinhphu.vn': ('baochinhphu', crawl_baochinhphu_article),
+                'soha.vn': ('soha', crawl_soha_article),
+            }
+
+            for domain, (source_type, crawl_func) in source_mapping.items():
+                if domain in real_url:
+                    article_data = crawl_func(real_url, driver, title, pubDate)
+                    break
             else:
                 print(f"Không hỗ trợ nguồn: {real_url}")
                 continue
