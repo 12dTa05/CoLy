@@ -1,4 +1,4 @@
-def crawl_tuoitre_article(link, driver, title, pubDate):
+def crawl_tuoitre_article(keyword, link, driver, title, pubDate):
     """
     Crawl bài báo từ Tuổi Trẻ.
     """
@@ -30,23 +30,21 @@ def crawl_tuoitre_article(link, driver, title, pubDate):
             'crawled_at': datetime.utcnow()
         }
         
-        description_tag = soup.find('div', class_='detail-content contentOuter sp-detail-content')
+        description_tag = soup.find('h2', class_='detail-sapo')
         if description_tag and description_tag.find('p'):
             article_data['description'] = description_tag.find('p').text.strip()
         
-        content_tag = soup.find('div', class_='detail-content contentOuter sp-detail-content')
+        content_tag = soup.find('div', class_='detail-content afcbc-body')
         if content_tag:
-            for unwanted in content_tag.find_all(['div', 'script', 'iframe', 'figure']):
-                unwanted.decompose()
             article_data['content'] = ' '.join(p.text.strip() for p in content_tag.find_all('p') if p.text.strip())
         
         if article_data['content']:
             from app import summarize_content
-            article_data['summary'] = summarize_content(article_data['content'])
+            article_data['summary'] = summarize_content(keyword, article_data['content'])
         
-        if article_data['content'] is not None and article_data['summary'] is not None:
+        if article_data['content'] is not None and article_data['summary'] != 'None':
             return article_data
     
     except Exception as e:
         print(f"Error occurred while crawling Tuổi Trẻ {link}: {e}")
-        return {'link': link, 'error': str(e), 'source': 'tuoitre', 'crawled_at': datetime.utcnow()}
+        return None

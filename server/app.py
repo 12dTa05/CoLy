@@ -19,6 +19,41 @@ from utils.vnexpress import crawl_vnexpress_article
 from utils.dantri import crawl_dantri_article
 from utils.tuoitre import crawl_tuoitre_article
 from utils.thanhnien import crawl_thanhnien_article
+from utils._24h import crawl_24h_article
+from utils.baobinhphuoc import crawl_baobinhphuoc_article
+from utils.baocongthuong import crawl_baocongthuong_article
+from utils.baodautu import crawl_baodautu_article
+from utils.baophapluat import crawl_baophapluat_article
+from utils.baophunuthudo import crawl_baophunuthudo_article
+from utils.baoquocte import crawl_baoquocte_article
+from utils.baochinhphu import crawl_baochinhphu_article
+from utils.baoxaydung import crawl_baoxaydung_article
+from utils.bbc import crawl_bbc_article
+from utils.cand import crawl_cand_article
+from utils.congngheviet import crawl_congngheviet_article
+from utils.dantoc import crawl_dantoc_article
+from utils.genz import crawl_genz_article
+from utils.giaoducthoidai import crawl_giaoducthoidai_article
+from utils.laodong import crawl_laodong_article
+from utils.nhandan import crawl_nhandan_article
+from utils.nld import crawl_nld_article
+from utils.nongnghiepmoitruong import crawl_nongnghiepmoitruong_article
+from utils.phongvu import crawl_phongvu_article
+from utils.qdnd import crawl_qdnd_article
+from utils.soha import crawl_soha_article
+from utils.suckhoedoisong import crawl_suckhoedoisong_article
+from utils.tapchicongsan import crawl_tapchicongsan_article
+from utils.thanhtra import crawl_thanhtra_article
+from utils.thoibaonganhang import crawl_thoibaonganhang_article
+from utils.thoibaotaichinhvietnam import crawl_thoibaotaichinhvietnam_article
+from utils.tinnhanhchungkhoan import crawl_tinnhanhchungkhoan_article
+from utils.toquoc import crawl_toquoc_article
+from utils.tuoitrethudo import crawl_tuoitrethudo_article
+from utils.vietnam import crawl_vietnam_article
+from utils.vietnamnet import crawl_vietnamnet_article
+from utils.vietnamnews import crawl_vietnamnews_article
+from utils.vietnamplus import crawl_vietnamplus_article
+
 
 app = Flask(__name__)
 
@@ -37,16 +72,22 @@ def connect_to_mongodb():
         print(f"Không thể kết nối với MongoDB: {e}")
         return None
 
-def summarize_content(content, max_sentences=12): #GeminiAPI
+def summarize_content(keyword, content, max_sentences=12): #GeminiAPI
     if not content or len(content.strip()) < 80:
         return None
     
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = (
-            f"Tóm tắt nội dung sau thành tối đa {max_sentences} câu, sao cho vẫn đảm bảo có thể bao quát được toàn bộ nội dung và giữ được các thông tin quan trọng, nếu là tiếng nươc ngoài thì hãy dịch ra tiếng việt sao cho phù hợp, đặc biệt là phù hợp với người đọc báo:\n\n"
+            f"Hãy đọc nội dung sau và so sánh với nội dung mà từ khóa '{keyword}' yêu cầu. "
+            f"Nếu nội dung không liên quan hoặc không phù hợp, hãy trả về kết quả rỗng. "
+            f"Nếu nội dung phù hợp, hãy tóm tắt nội dung đó trong tối đa {max_sentences} câu, "
+            f"đảm bảo bao quát toàn bộ nội dung và giữ lại các thông tin quan trọng. "
+            f"Nếu nội dung là tiếng nước ngoài, hãy dịch sang tiếng Việt một cách chính xác và tự nhiên, "
+            f"phù hợp với phong cách báo chí và dễ hiểu với người đọc thông thường.\n\n"
             f"{content}"
         )
+
         response = model.generate_content(prompt)
         summary = response.text.strip()
         return summary if summary else None
@@ -195,7 +236,7 @@ def get_real_url_after_redirect(driver, google_news_url): #lay URL thuc de thuc 
         print(f"Lỗi khi truy cập URL {google_news_url}: {e}")
         return None
 
-def visit_article_links(news_data, driver, collection):
+def visit_article_links(keyword, news_data, driver, collection):
     """
     Truy cập từng liên kết bài báo và crawl nội dung.
     """
@@ -224,13 +265,45 @@ def visit_article_links(news_data, driver, collection):
                 'dantri.com.vn': ('dantri', crawl_dantri_article),
                 'tuoitre.vn': ('tuoitre', crawl_tuoitre_article),
                 'thanhnien.vn': ('thanhnien', crawl_thanhnien_article),
+                '24h.com.vn': ('24h', crawl_24h_article),
+                'baobinhphuoc.com.vn': ('baobinhphuoc', crawl_baobinhphuoc_article),
+                'congthuong.vn': ('baocongthuong', crawl_baocongthuong_article),
+                'baodautu.vn': ('baodautu', crawl_baodautu_article),
+                'baophapluat.vn': ('baophapluat', crawl_baophapluat_article),
+                'baophunuthudo.vn': ('baophunuthudo', crawl_baophunuthudo_article),
+                'baoquocte.vn': ('baoquocte', crawl_baoquocte_article),
                 'baochinhphu.vn': ('baochinhphu', crawl_baochinhphu_article),
+                'baoxaydung.vn': ('baoxaydung', crawl_baoxaydung_article),
+                'bbc.com': ('bbc', crawl_bbc_article),
+                'cand.com.vn': ('cand', crawl_cand_article),
+                'congngheviet.com': ('congngheviet', crawl_congngheviet_article),
+                'genz.com.vn': ('genz', crawl_genz_article),
+                'giaoducthoidai.vn': ('giaoducthoidai', crawl_giaoducthoidai_article),
+                'laodong.vn': ('laodong', crawl_laodong_article),
+                'nhandan.vn': ('nhandan', crawl_nhandan_article),
+                'nld.com.vn': ('nld', crawl_nld_article),
+                'nongnghiepmoitruong.vn': ('nongnghiepmoitruong', crawl_nongnghiepmoitruong_article),
+                'phongvu.vn': ('phongvu', crawl_phongvu_article),
+                'qdnd.vn': ('qdnd', crawl_qdnd_article),
                 'soha.vn': ('soha', crawl_soha_article),
+                'suckhoedoisong.vn': ('suckhoedoisong', crawl_suckhoedoisong_article),
+                'tapchicongsan.org.vn': ('tapchicongsan', crawl_tapchicongsan_article),
+                'thanhtra.com.vn': ('thanhtra', crawl_thanhtra_article),
+                'thoibaonganhang.vn': ('thoibaonganhang', crawl_thoibaonganhang_article),
+                'thoibaotaichinhvietnam.vn': ('thoibaotaichinhvietnam', crawl_thoibaotaichinhvietnam_article),
+                'tinnhanhchungkhoan.vn': ('tinnhanhchungkhoan', crawl_tinnhanhchungkhoan_article),
+                'toquoc.vn': ('toquoc', crawl_toquoc_article),
+                'tuoitrethudo.vn': ('tuoitrethudo', crawl_tuoitrethudo_article),
+                'vietnam.vn': ('vietnam', crawl_vietnam_article),
+                'vietnamnet.vn': ('vietnamnet', crawl_vietnamnet_article),
+                'vietnamnews.vn': ('vietnamnews', crawl_vietnamnews_article),
+                'vietnamplus.vn': ('vietnamplus', crawl_vietnamplus_article),
             }
+
 
             for domain, (source_type, crawl_func) in source_mapping.items():
                 if domain in real_url:
-                    article_data = crawl_func(real_url, driver, title, pubDate)
+                    article_data = crawl_func(keyword, real_url, driver, title, pubDate)
                     break
             else:
                 print(f"Không hỗ trợ nguồn: {real_url}")
@@ -261,7 +334,7 @@ def crawl_in_background(keyword, db):
     try:
         news_data, driver = crawl_google_news(keyword)
         if news_data:
-            visit_article_links(news_data, driver, collection)
+            visit_article_links(keyword, news_data, driver, collection)
     except Exception as e:
         print(f"Lỗi khi crawl tin tức cho từ khóa {keyword}: {e}")
     finally:
@@ -333,9 +406,6 @@ def schedule_tasks():
 
 @app.route('/api/keywords', methods=['GET'])
 def get_keywords():
-    """
-    Lấy danh sách từ khóa từ collection keywords.
-    """
     db = connect_to_mongodb()
     if db is None:
         return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
@@ -346,9 +416,6 @@ def get_keywords():
 
 @app.route('/api/keywords', methods=['POST'])
 def add_keyword():
-    """
-    Thêm từ khóa mới vào collection keywords và tạo collection riêng.
-    """
     data = request.get_json()
     keyword = data.get('keyword')
     
@@ -364,15 +431,12 @@ def add_keyword():
         return jsonify({'message': f'Từ khóa "{keyword}" đã tồn tại'}), 200
     
     keywords_collection.insert_one({'keyword': keyword})
-    create_collection_with_ttl(db, keyword)  # Tạo collection với TTL
+    create_collection_with_ttl(db, keyword)
     
     return jsonify({'message': f'Đã thêm từ khóa "{keyword}"'}), 200
 
 @app.route('/api/keywords/<keyword>', methods=['DELETE'])
 def delete_keyword(keyword):
-    """
-    Xóa từ khóa và collection tương ứng.
-    """
     db = connect_to_mongodb()
     if db is None:
         return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
@@ -381,15 +445,12 @@ def delete_keyword(keyword):
     result = keywords_collection.delete_one({'keyword': keyword})
     
     if result.deleted_count > 0:
-        db.drop_collection(keyword)  # Xóa collection của từ khóa
+        db.drop_collection(keyword)
         return jsonify({'message': f'Đã xóa từ khóa "{keyword}" và collection tương ứng'}), 200
     return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
 
 @app.route('/api/crawl', methods=['POST'])
 def start_crawl():
-    """
-    Kích hoạt crawl bài báo dựa trên từ khóa.
-    """
     data = request.get_json()
     keyword = data.get('keyword')
     
@@ -404,18 +465,13 @@ def start_crawl():
     if not keywords_collection.find_one({'keyword': keyword}):
         return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
     
-    # Chạy crawl trong luồng nền
     threading.Thread(target=crawl_in_background, args=(keyword, db)).start()
     
     return jsonify({'message': f'Đã bắt đầu crawl cho từ khóa "{keyword}"'}), 200
 
 @app.route('/api/articles', methods=['GET'])
 def get_articles():
-    """
-    Lấy danh sách bài báo từ collection của từ khóa, hỗ trợ lọc theo nguồn.
-    """
     keyword = request.args.get('keyword')
-    source = request.args.get('source')
     
     if not keyword:
         return jsonify({'error': 'Yêu cầu cung cấp từ khóa'}), 400
@@ -430,11 +486,7 @@ def get_articles():
     
     collection = db[keyword]
     
-    query = {}
-    if source:
-        query['source'] = source
-    
-    articles = list(collection.find(query, {
+    articles = list(collection.find({}, {
         '_id': 0,
         'title': 1,
         'link': 1,
@@ -451,9 +503,6 @@ def get_articles():
 
 @app.route('/api/daily-report', methods=['GET'])
 def get_daily_report():
-    """
-    Tạo báo cáo hàng ngày từ tất cả các tin tức đã crawl.
-    """
     keyword = request.args.get('keyword')
     
     if not keyword:
@@ -469,7 +518,6 @@ def get_daily_report():
     
     collection = db[keyword]
     
-    # Lấy các bài báo trong ngày hiện tại
     today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     articles = list(collection.find({
         'crawled_at': {'$gte': today}
@@ -482,7 +530,6 @@ def get_daily_report():
         'source': 1
     }).sort('crawled_at', -1))
     
-    # Tạo báo cáo
     report = {
         'keyword': keyword,
         'date': datetime.utcnow().strftime('%Y-%m-%d'),

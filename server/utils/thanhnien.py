@@ -1,4 +1,4 @@
-def crawl_thanhnien_article(link, driver, title, pubDate):
+def crawl_thanhnien_article(keyword, link, driver, title, pubDate):
     """
     Crawl bài báo từ Thanh Niên.
     """
@@ -39,11 +39,11 @@ def crawl_thanhnien_article(link, driver, title, pubDate):
         
         if article_data['content']:
             from app import summarize_content
-            article_data['summary'] = summarize_content(article_data['content'])
+            article_data['summary'] = summarize_content(keyword, article_data['content'])
         
-        if article_data['content'] is not None and article_data['summary'] is not None:
+        if article_data['content'] is not None and article_data['summary'] != 'None':
             return article_data
     
     except Exception as e:
         print(f"Error occurred while crawling Thanh Niên {link}: {e}")
-        return {'link': link, 'error': str(e), 'source': 'thanhnien', 'crawled_at': datetime.utcnow()}
+        return None
