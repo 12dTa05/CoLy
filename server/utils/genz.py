@@ -38,7 +38,7 @@ def crawl_genz_article(keyword, link, driver, title, pubDate):
             from app import summarize_content
             article_data['summary'] = summarize_content(keyword, article_data['content'])
         
-        if article_data['content'] is not None and article_data['summary'] 'None':
+        if article_data['content'] is not None and article_data['summary'] != 'None':
             return article_data
     
     except Exception as e:
