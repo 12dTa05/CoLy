@@ -25,18 +25,25 @@
     <!-- Keyword Selector Form -->
     <form action="/articles" method="GET" class="mb-6">
       <select name="keyword" class="border p-2 rounded" onchange="this.form.submit()">
+        <option value="">Chọn từ khóa</option>
         <% keywords.forEach(k => { %>
           <option value="<%= k %>" <%= k === keyword ? 'selected' : '' %>><%= k %></option>
         <% }) %>
       </select>
     </form>
 
-    <!-- Start Crawl Button -->
+    <!-- Buttons -->
     <% if (keyword) { %>
-      <form action="/start-crawl" method="POST" class="mb-6">
-        <input type="hidden" name="keyword" value="<%= keyword %>">
-        <button type="submit" class="bg-green-500 text-white p-2 rounded hover:bg-green-600">Cập nhật bài báo mới</button>
-      </form>
+      <div class="flex space-x-4 mb-6">
+        <form action="/start-crawl" method="POST">
+          <input type="hidden" name="keyword" value="<%= keyword %>">
+          <button type="submit" class="bg-green-500 text-white p-2 rounded hover:bg-green-600">Cập nhật bài báo mới</button>
+        </form>
+        <form action="/articles" method="GET">
+          <input type="hidden" name="keyword" value="<%= keyword %>">
+          <button type="submit" class="bg-blue-500 text-white p-2 rounded hover:bg-blue-600">Refresh</button>
+        </form>
+      </div>
     <% } %>
 
     <!-- Articles List -->

@@ -9,7 +9,7 @@ def crawl_tuoitre_article(keyword, link, driver, title, pubDate):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
-        from datetime import datetime
+        from datetime import datetime, timezone
         from bs4 import BeautifulSoup
         driver.get(link)
         WebDriverWait(driver, 10).until(
@@ -24,15 +24,14 @@ def crawl_tuoitre_article(keyword, link, driver, title, pubDate):
             'description': None,
             'pub_date': pubDate,
             'content': None,
-            'html_content': page_content,
             'source': 'tuoitre',
             'summary': None,
-            'crawled_at': datetime.utcnow()
+            'crawled_at': datetime.now(timezone.utc)
         }
         
         description_tag = soup.find('h2', class_='detail-sapo')
         if description_tag and description_tag.find('p'):
-            article_data['description'] = description_tag.find('p').text.strip()
+            article_data['description'] = description_tag.text.strip()
         
         content_tag = soup.find('div', class_='detail-content afcbc-body')
         if content_tag:

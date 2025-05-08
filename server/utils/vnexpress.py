@@ -6,7 +6,7 @@ def crawl_vnexpress_article(keyword, link, driver, title, pubDate):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
-        from datetime import datetime
+        from datetime import datetime, timezone
         from bs4 import BeautifulSoup
         
         driver.get(link)
@@ -22,12 +22,9 @@ def crawl_vnexpress_article(keyword, link, driver, title, pubDate):
             'description': None,
             'pub_date': pubDate,
             'content': None,
-            'author': None,
-            'tags': [],
-            'html_content': page_content,
             'source': 'vnexpress',
             'summary': None,
-            'crawled_at': datetime.utcnow()
+            'crawled_at': datetime.now(timezone.utc)
         }
         
         description_tag = soup.find('p', class_='description')

@@ -13,7 +13,10 @@ import time
 import threading
 import schedule
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+from newspaper import Article
+import tldextract
 
 from utils.vnexpress import crawl_vnexpress_article
 from utils.dantri import crawl_dantri_article
@@ -74,7 +77,7 @@ def connect_to_mongodb():
 
 def summarize_content(keyword, content, max_sentences=12): #GeminiAPI
     if not content or len(content.strip()) < 80:
-        return None
+        return 'None'
     
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
@@ -90,11 +93,12 @@ def summarize_content(keyword, content, max_sentences=12): #GeminiAPI
 
         response = model.generate_content(prompt)
         summary = response.text.strip()
+
         return summary if summary else None
     
     except Exception as e:
         print(f"Error summarizing content: {e}")
-        return None
+        return 'None'
 
 def create_collection_with_ttl(db, collection_name): #collection tu dong xoa sau 3 ngay
     collection = db[collection_name]
@@ -305,25 +309,46 @@ def visit_article_links(keyword, news_data, driver, collection):
                 if domain in real_url:
                     article_data = crawl_func(keyword, real_url, driver, title, pubDate)
                     break
-            else:
-                print(f"Không hỗ trợ nguồn: {real_url}")
-                continue
+                else:
+                    try:
+                        article = Article(real_url)
+                        article.download()
+                        article.parse()
+
+                        summary = summarize_content(keyword, article.text)
+                        if summary == 'None':
+                            continue
+                        else:                        
+                            article_data = {
+                                'link': real_url,
+                                'title': title.split('-')[0].strip() if title else None,
+                                'description': article.meta_description,
+                                'pub_date': pubDate,
+                                'content': article.text,
+                                'source': f"{(tldextract.extract(real_url)).domain}.{(tldextract.extract(real_url)).suffix}",
+                                'summary': summary,
+                                'crawled_at': datetime.now(timezone.utc)
+                            }
+                    except Exception as e:
+                        print(e)
+
+                    continue
             
             # Cập nhật thông tin nguồn
-            if article_data and 'error' not in article_data:
+            if article_data is not None:
                 article_data['original_link'] = link
                 article_data['real_link'] = real_url
-                article_data['source_url'] = real_url
                 if source_type:
                     article_data['source'] = source_type
             
-            if collection is not None and article_data:
+            if collection is not None and article_data is not None:
                 collection.insert_one(article_data)
             
-            time.sleep(5)
+            time.sleep(12)
             
         except Exception as e:
             print(f"Lỗi khi xử lý bài báo từ {link}: {e}")
+            time.sleep(5)
 
 def crawl_in_background(keyword, db):
     """
@@ -340,6 +365,7 @@ def crawl_in_background(keyword, db):
     finally:
         if driver:
             try:
+                print('All done')
                 driver.quit()
             except:
                 pass
