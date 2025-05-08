@@ -79,11 +79,11 @@ def summarize_content(keyword, content, max_sentences=12): #GeminiAPI
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = (
-            f"Hãy đọc nội dung sau và so sánh với nội dung mà từ khóa '{keyword}' yêu cầu. "
-            f"Nếu nội dung không liên quan hoặc không phù hợp, hãy trả về kết quả rỗng. "
-            f"Nếu nội dung phù hợp, hãy tóm tắt nội dung đó trong tối đa {max_sentences} câu, "
-            f"đảm bảo bao quát toàn bộ nội dung và giữ lại các thông tin quan trọng. "
-            f"Nếu nội dung là tiếng nước ngoài, hãy dịch sang tiếng Việt một cách chính xác và tự nhiên, "
+            f"Hãy đọc nội dung sau và so sánh với nội dung mà từ khóa '{keyword}' yêu cầu."
+            f"Nếu nội dung không liên quan hoặc không phù hợp, hãy trả về đúng một dòng: 'None'."
+            f"Nếu nội dung phù hợp, hãy tóm tắt nội dung đó trong tối đa {max_sentences} câu,"
+            f"đảm bảo bao quát toàn bộ nội dung và giữ lại các thông tin quan trọng."
+            f"Nếu nội dung là tiếng nước ngoài, hãy dịch sang tiếng Việt một cách chính xác và tự nhiên,"
             f"phù hợp với phong cách báo chí và dễ hiểu với người đọc thông thường.\n\n"
             f"{content}"
         )
@@ -147,7 +147,7 @@ def crawl_google_news(keyword): #crawl RSS
 def get_real_url_after_redirect(driver, google_news_url): #lay URL thuc de thuc hien soup
     try:
         driver.get(google_news_url)
-        WebDriverWait(driver, 20).until(
+        WebDriverWait(driver, 12).until(
             EC.presence_of_element_located((By.TAG_NAME, "body"))
         )
         
@@ -158,7 +158,7 @@ def get_real_url_after_redirect(driver, google_news_url): #lay URL thuc de thuc 
                     href = link.get_attribute('href')
                     if href and 'news.google.com' not in href:
                         link.click()
-                        WebDriverWait(driver, 20).until(
+                        WebDriverWait(driver, 12).until(
                             EC.presence_of_element_located((By.TAG_NAME, "body"))
                         )
                         break
@@ -388,15 +388,10 @@ def crawl_all_keywords():
         threading.Thread(target=crawl_in_background, args=(keyword, db)).start()
 
 def schedule_tasks():
-    """
-    Lập lịch crawl và cleanup.
-    """
-    # Crawl hàng ngày lúc 8:00 sáng
     schedule.every().day.at("08:00").do(crawl_all_keywords)
-    # Cleanup collection lúc 2:00 sáng
-    schedule.every().day.at("02:00").do(cleanup_collections)
+
+    schedule.every().day.at("20:00").do(cleanup_collections)
     
-    # Chạy lịch trong luồng nền
     def run_schedule():
         while True:
             schedule.run_pending()
