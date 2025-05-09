@@ -241,9 +241,9 @@ def get_real_url_after_redirect(driver, google_news_url): #lay URL thuc de thuc 
         return None
 
 def visit_article_links(keyword, news_data, driver, collection):
-    """
-    Truy cập từng liên kết bài báo và crawl nội dung.
-    """
+    
+    time.sleep(12)
+
     for item in news_data:
         link = item['link']
         title = item['title']
@@ -342,10 +342,11 @@ def visit_article_links(keyword, news_data, driver, collection):
                     article_data['source'] = source_type
             
             if collection is not None and article_data is not None:
-                collection.insert_one(article_data)
-            
-            time.sleep(12)
-            
+                if collection.find_one({'real_link' : {real_url}}):
+                    continue
+                else:
+                    collection.insert_one(article_data)
+                        
         except Exception as e:
             print(f"Lỗi khi xử lý bài báo từ {link}: {e}")
             time.sleep(5)
