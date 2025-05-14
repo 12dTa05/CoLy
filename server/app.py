@@ -535,7 +535,7 @@ def auto_crawl_all_keywords():
 
 def generate_daily_summary(keyword, keyword_id, date, db):
     """
-    Tạo bài tổng hợp hàng ngày cho từng từ khóa sử dụng Gemini API.
+    Tạo bài tổng hợp hàng ngày cho từng từ khóa sử dụng phương pháp phân nhóm và hai API Gemini.
     """
     # Lấy tất cả bài báo của từ khóa trong ngày
     start_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -546,47 +546,101 @@ def generate_daily_summary(keyword, keyword_id, date, db):
         'crawled_at': {'$gte': start_date, '$lte': end_date}
     }).sort('crawled_at', -1))
     
-    if not articles or len(articles) < 3:  # Cần ít nhất 3 bài để tổng hợp
+    if not articles or len(articles) < 3:
         print(f"Không đủ bài báo để tổng hợp cho từ khóa '{keyword}' ngày {date.strftime('%Y-%m-%d')}")
         return None
-    
-    # Chuẩn bị dữ liệu cho Gemini API
-    article_data = []
-    for i, article in enumerate(articles):
-        article_data.append({
+
+    # Tóm tắt từng bài báo bằng TextRank
+    summarized_articles = []
+    for article in articles:
+        content = article.get('summary') or article.get('content') or ''
+        short_summary = textrank_summarize(content, sentence_count=5)
+        summarized_articles.append({
             'title': article['title'],
             'url': article['real_link'],
-            'summary': article.get('summary', '')
+            'summary': short_summary
         })
-    
-    # Chuẩn bị prompt cho Gemini
-    prompt = f"""
-    Hãy tạo một bài báo tổng hợp về chủ đề "{keyword}" dựa trên các bài báo sau. Bài viết cần có đoạn mở đầu tổng quan về chủ đề, sau đó phân tích và tổng hợp thông tin từ các nguồn, và kết luận với nhận định tổng thể.
 
+    # Phân nhóm bài báo thành các nhóm nhỏ hơn
+    chunk_size = 5  # Theo yêu cầu của Đại ca
+    article_chunks = [summarized_articles[i:i+chunk_size] for i in range(0, len(summarized_articles), chunk_size)]
+    
+    # Tạo tóm tắt cho từng nhóm
+    chunk_summaries = []
+    for chunk_index, chunk in enumerate(article_chunks):
+        chunk_prompt = f"""
+        Hãy tạo một đoạn tổng hợp thông tin ngắn về chủ đề "{keyword}" dựa trên các bài báo sau.
+        Hãy trích dẫn nguồn thông tin bằng cú pháp [tiêu đề](url).
+        Đoạn tổng hợp cần ngắn gọn nhưng vẫn bao quát được nội dung chính của các bài báo.
+        
+        Dữ liệu các bài báo (Nhóm {chunk_index + 1}/{len(article_chunks)}):
+        """
+        
+        for i, article in enumerate(chunk):
+            chunk_prompt += f"""
+            --- Bài {i+1} ---
+            Tiêu đề: {article['title']}
+            URL: {article['url']}
+            Nội dung: {article['summary']}
+            """
+        
+        try:
+            # Sử dụng Gemini Flash cho phần tóm tắt nhóm (API thứ nhất)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(chunk_prompt)
+            chunk_summaries.append(response.text.strip())
+            
+            # Đợi 1 giây để tránh gọi API quá nhanh
+            import time
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"Lỗi khi tóm tắt nhóm bài báo {chunk_index + 1}: {e}")
+            # Nếu có lỗi, thêm một phần tóm tắt đơn giản
+            simple_summary = f"Nhóm {chunk_index + 1} bao gồm các bài báo: " + ", ".join([a['title'] for a in chunk])
+            chunk_summaries.append(simple_summary)
+    
+    # Tạo prompt cuối cùng với các tóm tắt nhóm
+    final_prompt = f"""
+    Viết một bài tổng hợp tin tức ngày {date.strftime('%Y-%m-%d')} về chủ đề "{keyword}", dựa trên các tóm tắt nhóm bài báo sau.
+    
     Yêu cầu quan trọng:
     1. Viết như một bài báo chính thức, với văn phong mạch lạc, chuyên nghiệp, báo chí
-    2. Cấu trúc bài viết rõ ràng với các đề mục phù hợp
-    3. Mỗi khi đưa ra thông tin cụ thể từ một bài báo, PHẢI đặt tham chiếu đến bài báo gốc bằng cú pháp [source_name](URL)
-    4. Không sao chép nguyên văn, hãy diễn đạt lại bằng từ ngữ sáng tạo
-    5. Độ dài tùy ý, đảm bảo bao quát đầy đủ thông tin quan trọng
-    6. Đặt tựa đề phù hợp cho bài viết
-
-    Dữ liệu các bài báo gồm {len(article_data)} bài:
+    2. Cấu trúc bài viết rõ ràng với mở bài, thân bài và kết luận
+    3. Mỗi khi đưa ra thông tin cụ thể từ một bài báo, PHẢI đặt tham chiếu đến bài báo gốc bằng cú pháp [tiêu đề](URL)
+    4. Diễn đạt bằng từ ngữ sáng tạo, tránh sao chép nguyên văn
+    5. Đặt tựa đề phù hợp cho bài viết
+    
+    Dưới đây là các tóm tắt theo nhóm bài báo:
     """
     
-    for i, article in enumerate(article_data):
-        prompt += f"""
-        --- Bài {i+1} ---
-        Tiêu đề: {article['title']}
-        URL: {article['url']}
-        Nội dung: {article['summary']}
-        """
+    for i, summary in enumerate(chunk_summaries):
+        final_prompt += f"\n--- Nhóm {i+1} ---\n{summary}\n"
     
-    try:
-        model = genai.GenerativeModel('gemini-1.5-pro')
-        response = model.generate_content(prompt)
-        summary_content = response.text.strip()
+    # Thêm danh sách tham chiếu
+    reference_list = "\nDanh sách bài báo tham khảo:\n"
+    for article in summarized_articles:
+        reference_list += f"- [{article['title']}]({article['url']})\n"
+    
+    # Kiểm tra nếu prompt quá dài, có thể rút gọn phần danh sách tham khảo
+    if len(final_prompt) + len(reference_list) > 100000:  # Giả sử giới hạn token
+        reference_list = f"\nDanh sách bài báo tham khảo: (Tổng cộng {len(summarized_articles)} bài)\n"
+        # Chỉ thêm 20 bài đầu tiên
+        for article in summarized_articles[:20]:
+            reference_list += f"- [{article['title']}]({article['url']})\n"
+        reference_list += "- ... và các bài khác."
+    
+    final_prompt += reference_list
 
+    try:
+        # Sử dụng Gemini Pro cho bài tổng hợp cuối cùng (API thứ hai)
+        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE") #AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE , AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU, AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI
+        genai.configure(api_key=GEMINI_API_KEY)
+
+        model = genai.GenerativeModel('gemini-1.5-pro')
+        response = model.generate_content(final_prompt)
+        summary_content = response.text.strip()
+        
         print(f"Gemini API, độ dài: {len(summary_content)}")
         
         # Tạo phiên bản plain text (không có HTML)
@@ -636,7 +690,7 @@ def generate_daily_summary(keyword, keyword_id, date, db):
         return summary_id
     
     except Exception as e:
-        print(f"Lỗi khi tạo bài tổng hợp cho từ khóa '{keyword}': {e}")
+        print(f"Lỗi khi tạo bài tổng hợp cuối cùng cho từ khóa '{keyword}': {e}")
         return None
 
 def generate_all_summaries():
