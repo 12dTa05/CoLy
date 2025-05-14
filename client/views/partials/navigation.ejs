@@ -1,0 +1,20 @@
+<nav class="bg-white shadow-md p-4">
+  <div class="container mx-auto flex justify-between items-center">
+    <a href="/" class="text-xl font-bold text-blue-600">Hệ thống Crawl Tin tức</a>
+    <div class="flex items-center space-x-4">
+      <!-- Phần menu navigation -->
+      <a href="/" class="text-blue-500 hover:underline">Quản lý từ khóa</a>
+      <a href="/articles<%= typeof keywordId !== 'undefined' ? '?keywordId=' + keywordId : '' %>" class="text-blue-500 hover:underline">Bài báo</a>
+      <a href="/summaries<%= typeof keywordId !== 'undefined' ? '?keywordId=' + keywordId : '' %>" class="text-blue-500 hover:underline">Bài tổng hợp</a>
+      
+      <!-- Phần đăng nhập/đăng xuất -->
+      <% if (username) { %>
+        <span class="text-gray-700">Xin chào, <%= username %></span>
+        <a href="/logout" class="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600">Đăng xuất</a>
+      <% } else { %>
+        <a href="/login" class="text-blue-500 hover:underline">Đăng nhập</a>
+        <a href="/register" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">Đăng ký</a>
+      <% } %>
+    </div>
+  </div>
+</nav>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bài tổng hợp hàng ngày</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 font-sans">
+  <!-- Sử dụng navigation chung -->
+  <%- include('partials/navigation') %>
+
+  <div class="container mx-auto p-4">
+    <div class="mb-6 flex justify-between items-center">
+      <h1 class="text-3xl font-bold">Bài tổng hợp hàng ngày</h1>
+      <div class="space-x-4">
+        <a href="/" class="text-blue-500 hover:underline">Quản lý từ khóa</a>
+        <% if (selectedKeyword) { %>
+          <a href="/articles?keywordId=<%= selectedKeyword.id %>" class="text-blue-500 hover:underline">Xem bài báo</a>
+        <% } %>
+      </div>
+    </div>
+
+    <!-- Error Message -->
+    <% if (typeof error !== 'undefined' && error) { %>
+      <div class="bg-red-100 text-red-700 p-4 rounded mb-4">
+        <%= error %>
+      </div>
+    <% } %>
+
+    <!-- Keyword Selector -->
+    <div class="bg-white p-4 rounded shadow-md mb-6">
+      <form action="/summaries" method="GET" class="flex items-center">
+        <label for="keywordSelect" class="mr-2 font-medium">Chọn từ khóa:</label>
+        <select id="keywordSelect" name="keywordId" class="border p-2 rounded" onchange="this.form.submit()">
+          <option value="">-- Chọn từ khóa --</option>
+          <% keywords.forEach(k => { %>
+            <option value="<%= k.id %>" <%= selectedKeyword && k.id === selectedKeyword.id ? 'selected' : '' %>><%= k.keyword %></option>
+          <% }) %>
+        </select>
+      </form>
+    </div>
+
+    <% if (selectedKeyword) { %>
+      <!-- Summaries List -->
+      <div class="bg-white p-6 rounded shadow-md">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-semibold">Bài tổng hợp cho từ khóa "<%= selectedKeyword.keyword %>"</h2>
+          <form action="/regenerate-summary" method="POST">
+            <input type="hidden" name="keywordId" value="<%= selectedKeyword.id %>">
+            <input type="hidden" name="date" value="<%= new Date().toISOString().split('T')[0] %>">
+            <button type="submit" class="bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600 text-sm">
+              Tạo bài tổng hợp mới
+            </button>
+          </form>
+        </div>
+        
+        <% if (summaries.length === 0) { %>
+          <p class="text-gray-500">Chưa có bài tổng hợp nào. Hãy nhấn "Tạo bài tổng hợp mới" để tạo bài tổng hợp cho hôm nay.</p>
+        <% } else { %>
+          <div class="overflow-x-auto">
+            <table class="min-w-full bg-white">
+              <thead>
+                <tr class="bg-gray-200 text-gray-700">
+                  <th class="py-2 px-4 text-left">Ngày</th>
+                  <th class="py-2 px-4 text-center">Số bài báo</th>
+                  <th class="py-2 px-4 text-center">Nguồn</th>
+                  <th class="py-2 px-4 text-center">Ngày tạo</th>
+                  <th class="py-2 px-4 text-center">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody>
+                <% summaries.forEach(summary => { %>
+                  <tr class="border-b hover:bg-gray-50">
+                    <td class="py-3 px-4">
+                      <%= new Date(summary.date).toLocaleDateString('vi-VN') %>
+                    </td>
+                    <td class="py-3 px-4 text-center">
+                      <%= summary.article_count %>
+                    </td>
+                    <td class="py-3 px-4 text-center">
+                      <%= summary.article_sources.join(', ') %>
+                    </td>
+                    <td class="py-3 px-4 text-center">
+                      <%= new Date(summary.created_at).toLocaleString('vi-VN') %>
+                    </td>
+                    <td class="py-3 px-4 text-center">
+                      <a href="/summaries/<%= summary._id %>" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 text-sm">
+                        Xem chi tiết
+                      </a>
+                    </td>
+                  </tr>
+                <% }) %>
+              </tbody>
+            </table>
+          </div>
+        <% } %>
+      </div>
+    <% } else { %>
+      <div class="bg-white p-6 rounded shadow-md">
+        <p class="text-gray-500">Vui lòng chọn từ khóa để xem danh sách bài tổng hợp.</p>
+      </div>
+    <% } %>
+  </div>
+
+   <footer class="bg-white p-4 mt-8 border-t">
+    <div class="container mx-auto text-center text-gray-600">
+      <p>&copy; 2025 Hệ thống Crawl Tin tức. Tất cả quyền được bảo lưu.</p>
+    </div>
+  </footer>
+</body>
+</html>

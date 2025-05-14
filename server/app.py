@@ -1,6 +1,10 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
+from flask_cors import CORS
+from flask_bcrypt import Bcrypt
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from bson.objectid import ObjectId
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -57,19 +61,30 @@ from utils.vietnamnet import crawl_vietnamnet_article
 from utils.vietnamnews import crawl_vietnamnews_article
 from utils.vietnamplus import crawl_vietnamplus_article
 
-
 app = Flask(__name__)
+CORS(app)
+bcrypt = Bcrypt(app)
+app.config['JWT_SECRET_KEY'] = 'your-secret-key-change-in-production'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
+jwt = JWTManager(app)
 
 # Cấu hình Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI") #AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE , AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU, AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI
 genai.configure(api_key=GEMINI_API_KEY)
 
 def connect_to_mongodb():
     try:
-        client = MongoClient("mongodb+srv://Death:DeathA_1205@death.8wudq.mongodb.net/ThayUy?retryWrites=true&w=majority&appName=Death")
+        client = MongoClient("mongodb+srv://Death:DeathA_1205@death.8wudq.mongodb.net/CoLy?retryWrites=true&w=majority&appName=Death")
         client.admin.command('ping')
-        print("MongoDB conneted")
+        print("MongoDB connected")
         db = client['CoLy']
+        
+        # Tạo indexes
+        db.articles.create_index("expires_at", expireAfterSeconds=0)
+        db.articles.create_index("keywords")
+        db.articles.create_index("real_link", unique=True)
+        db.user_keyword_subscriptions.create_index([("user_id", 1), ("keyword_id", 1)], unique=True)
+        
         return db
     except ConnectionFailure as e:
         print(f"Không thể kết nối với MongoDB: {e}")
@@ -99,12 +114,6 @@ def summarize_content(keyword, content, max_sentences=12): #GeminiAPI
     except Exception as e:
         print(f"Error summarizing content: {e}")
         return 'None'
-
-def create_collection_with_ttl(db, collection_name): #collection tu dong xoa sau 3 ngay
-    collection = db[collection_name]
-    collection.create_index("crawled_at", expireAfterSeconds=259200) #tinh bang giay
-    return collection
-
 
 def crawl_google_news(keyword): #crawl RSS
     url = f"https://news.google.com/rss/search?q={keyword}&hl=vi&gl=VN&ceid=VN:vi"
@@ -240,10 +249,13 @@ def get_real_url_after_redirect(driver, google_news_url): #lay URL thuc de thuc 
         print(f"Lỗi khi truy cập URL {google_news_url}: {e}")
         return None
 
-def visit_article_links(keyword, news_data, driver, collection):
-    
+def visit_article_links(keyword, news_data, driver, db, keyword_id):
+    """
+    Xử lý bài báo và lưu vào collection articles.
+    """
+    article_count = 0
     time.sleep(12)
-
+    
     for item in news_data:
         link = item['link']
         title = item['title']
@@ -262,8 +274,20 @@ def visit_article_links(keyword, news_data, driver, collection):
                 
             print(f"URL thực: {real_url}")
             
-            # Xác định nguồn dựa trên URL thực
-            source_type = None
+            # Kiểm tra xem bài báo đã tồn tại chưa
+            existing_article = db.articles.find_one({'real_link': real_url})
+            if existing_article:
+                # Nếu đã tồn tại nhưng chưa liên kết với từ khóa hiện tại
+                if ObjectId(keyword_id) not in existing_article.get('keywords', []):
+                    db.articles.update_one(
+                        {'_id': existing_article['_id']},
+                        {'$addToSet': {'keywords': ObjectId(keyword_id)}}
+                    )
+                    article_count += 1
+                continue
+            
+            # Xác định nguồn và crawl nội dung
+            article_data = None
             source_mapping = {
                 'vnexpress.net': ('vnexpress', crawl_vnexpress_article),
                 'dantri.com.vn': ('dantri', crawl_dantri_article),
@@ -303,121 +327,372 @@ def visit_article_links(keyword, news_data, driver, collection):
                 'vietnamnews.vn': ('vietnamnews', crawl_vietnamnews_article),
                 'vietnamplus.vn': ('vietnamplus', crawl_vietnamplus_article),
             }
-
-
+            
             for domain, (source_type, crawl_func) in source_mapping.items():
                 if domain in real_url:
                     article_data = crawl_func(keyword, real_url, driver, title, pubDate)
                     break
-                else:
-                    try:
-                        article = Article(real_url)
-                        article.download()
-                        article.parse()
+            
+            # Nếu không tìm thấy nguồn cụ thể, sử dụng newspaper library
+            if not article_data:
+                try:
+                    article = Article(real_url)
+                    article.download()
+                    article.parse()
 
-                        summary = summarize_content(keyword, article.text)
-                        if summary == 'None':
-                            continue
-                        else:                        
-                            article_data = {
-                                'link': real_url,
-                                'title': title.split('-')[0].strip() if title else None,
-                                'description': article.meta_description,
-                                'pub_date': pubDate,
-                                'content': article.text,
-                                'source': f"{(tldextract.extract(real_url)).domain}.{(tldextract.extract(real_url)).suffix}",
-                                'summary': summary,
-                                'crawled_at': datetime.now(timezone.utc)
-                            }
-                    except Exception as e:
-                        print(e)
-
+                    summary = summarize_content(keyword, article.text)
+                    if summary == 'None':
+                        continue
+                    else:                        
+                        article_data = {
+                            'title': title.split('-')[0].strip() if title else None,
+                            'description': article.meta_description,
+                            'pub_date': pubDate,
+                            'content': article.text,
+                            'source': f"{(tldextract.extract(real_url)).domain}.{(tldextract.extract(real_url)).suffix}",
+                            'summary': summary
+                        }
+                except Exception as e:
+                    print(e)
                     continue
             
-            # Cập nhật thông tin nguồn
-            if article_data is not None:
-                article_data['original_link'] = link
-                article_data['real_link'] = real_url
-                if source_type:
-                    article_data['source'] = source_type
-            
-            if collection is not None and article_data is not None:
-                if collection.find_one({'real_link' : {real_url}}):
-                    continue
-                else:
-                    collection.insert_one(article_data)
-                        
+            if article_data:
+                # Cập nhật thông tin bài báo
+                article_data.update({
+                    'link': link,
+                    'real_link': real_url,
+                    'original_link': link,
+                    'keywords': [ObjectId(keyword_id)],
+                    'crawled_at': datetime.now(timezone.utc),
+                    'expires_at': datetime.now(timezone.utc) + timedelta(days=30)  # TTL 30 ngày
+                })
+                
+                # Lưu bài báo vào collection
+                db.articles.insert_one(article_data)
+                article_count += 1
+                
         except Exception as e:
             print(f"Lỗi khi xử lý bài báo từ {link}: {e}")
             time.sleep(5)
+    
+    return article_count
 
-def crawl_in_background(keyword, db):
+def crawl_in_background(keyword, db, keyword_id, job_id):
     """
-    Chạy crawl trong luồng nền và lưu vào collection riêng của từ khóa.
+    Chạy crawl trong luồng nền và lưu vào collection articles.
+    Tự động tạo bài tổng hợp sau khi crawl xong.
     """
-    collection = create_collection_with_ttl(db, keyword)
-    driver = None
     try:
+        # Cập nhật trạng thái job
+        db.crawl_jobs.update_one(
+            {'_id': job_id},
+            {'$set': {'status': 'running'}}
+        )
+        
+        # Thực hiện crawl
         news_data, driver = crawl_google_news(keyword)
+        article_count = 0
+        
         if news_data:
-            visit_article_links(keyword, news_data, driver, collection)
+            article_count = visit_article_links(keyword, news_data, driver, db, keyword_id)
+        
+        # Cập nhật thông tin từ khóa
+        db.keywords.update_one(
+            {'_id': ObjectId(keyword_id)},
+            {
+                '$set': {'last_crawled_at': datetime.now(timezone.utc)},
+                '$inc': {'article_count': article_count}
+            }
+        )
+        
+        # Cập nhật trạng thái job
+        db.crawl_jobs.update_one(
+            {'_id': job_id},
+            {
+                '$set': {
+                    'status': 'completed',
+                    'finished_at': datetime.now(timezone.utc),
+                    'article_count': article_count
+                }
+            }
+        )
+        
+        # Tạo bài tổng hợp ngay sau khi crawl xong
+        if article_count >= 3:  # Chỉ tạo bài tổng hợp nếu có ít nhất 3 bài báo mới
+            today = datetime.now(timezone.utc)
+            summary_id = generate_daily_summary(keyword, keyword_id, today, db)
+            
+            if summary_id:
+                # Cập nhật job với thông tin bài tổng hợp
+                db.crawl_jobs.update_one(
+                    {'_id': job_id},
+                    {'$set': {'summary_id': summary_id}}
+                )
+                print(f"Đã tạo bài tổng hợp cho từ khóa '{keyword}'")
+        
     except Exception as e:
         print(f"Lỗi khi crawl tin tức cho từ khóa {keyword}: {e}")
+        # Cập nhật trạng thái job thất bại
+        db.crawl_jobs.update_one(
+            {'_id': job_id},
+            {
+                '$set': {
+                    'status': 'failed',
+                    'finished_at': datetime.now(timezone.utc),
+                    'error': str(e)
+                }
+            }
+        )
     finally:
         if driver:
             try:
-                print('All done')
                 driver.quit()
             except:
                 pass
 
-def cleanup_collections():
+def cleanup_expired_articles():
     """
-    Xóa collection nếu không có cập nhật mới trong 2 ngày.
+    Xóa các bài báo hết hạn và cập nhật số lượng bài báo cho từ khóa.
     """
     db = connect_to_mongodb()
     if db is None:
-        print("Không thể kết nối đến MongoDB để dọn dẹp collections")
+        print("Không thể kết nối đến MongoDB để dọn dẹp bài báo")
         return
     
-    keywords_collection = db['keywords']
-    keywords = [k['keyword'] for k in keywords_collection.find()]
+    # Lấy danh sách từ khóa
+    keywords = list(db.keywords.find({}, {'_id': 1}))
     
     for keyword in keywords:
-        collection = db[keyword]
-        latest_article = collection.find_one(sort=[('crawled_at', -1)])
+        keyword_id = keyword['_id']
         
-        if latest_article:
-            latest_time = latest_article['crawled_at']
-            if datetime.utcnow() - latest_time > timedelta(days=2):
-                print(f"Drop collection {keyword} vì không có cập nhật trong 2 ngày.")
-                db.drop_collection(keyword)
-                keywords_collection.delete_one({'keyword': keyword})
-        else:
-            print(f"Drop collection {keyword} vì không có dữ liệu.")
-            db.drop_collection(keyword)
-            keywords_collection.delete_one({'keyword': keyword})
+        # Đếm số bài báo hiện tại của từ khóa
+        article_count = db.articles.count_documents({'keywords': keyword_id})
+        
+        # Cập nhật số lượng bài báo
+        db.keywords.update_one(
+            {'_id': keyword_id},
+            {'$set': {'article_count': article_count}}
+        )
 
-def crawl_all_keywords():
+def cleanup_inactive_keywords():
     """
-    Crawl bài báo cho tất cả từ khóa trong collection keywords.
+    Xóa các từ khóa không có người đăng ký.
     """
     db = connect_to_mongodb()
     if db is None:
-        print("Không thể kết nối đến MongoDB để crawl tất cả từ khóa")
+        print("Không thể kết nối đến MongoDB để dọn dẹp từ khóa")
         return
     
-    keywords_collection = db['keywords']
-    keywords = [k['keyword'] for k in keywords_collection.find()]
+    # Lấy danh sách từ khóa có người đăng ký
+    subscribed_keywords = set()
+    subscriptions = db.user_keyword_subscriptions.find({}, {'keyword_id': 1})
     
-    for keyword in keywords:
-        print(f"Crawl theo lịch cho từ khóa: {keyword}")
-        threading.Thread(target=crawl_in_background, args=(keyword, db)).start()
+    for subscription in subscriptions:
+        subscribed_keywords.add(subscription['keyword_id'])
+    
+    # Lấy tất cả từ khóa
+    all_keywords = list(db.keywords.find({}, {'_id': 1}))
+    
+    # Xóa các từ khóa không có người đăng ký
+    for keyword in all_keywords:
+        if keyword['_id'] not in subscribed_keywords:
+            db.keywords.delete_one({'_id': keyword['_id']})
+            print(f"Đã xóa từ khóa không hoạt động: {keyword['_id']}")
 
+def auto_crawl_all_keywords():
+    """
+    Tự động crawl tất cả từ khóa hoạt động.
+    """
+    db = connect_to_mongodb()
+    if db is None:
+        print("Không thể kết nối đến MongoDB để tự động crawl")
+        return
+    
+    # Lấy danh sách từ khóa có người đăng ký
+    subscribed_keywords = set()
+    subscriptions = db.user_keyword_subscriptions.find({}, {'keyword_id': 1})
+    
+    for subscription in subscriptions:
+        subscribed_keywords.add(subscription['keyword_id'])
+    
+    # Crawl các từ khóa có người đăng ký
+    for keyword_id in subscribed_keywords:
+        keyword_data = db.keywords.find_one({'_id': keyword_id})
+        if keyword_data and keyword_data.get('status') == 'active':
+            # Tạo job crawl mới
+            job_id = db.crawl_jobs.insert_one({
+                'keyword_id': keyword_id,
+                'status': 'pending',
+                'started_at': datetime.now(timezone.utc),
+                'triggered_by': 'system'
+            }).inserted_id
+            
+            # Bắt đầu crawl trong luồng riêng
+            threading.Thread(target=crawl_in_background, args=(keyword_data['keyword'], db, keyword_id, job_id)).start()
+            print(f"Tự động crawl từ khóa: {keyword_data['keyword']}")
+
+            time.sleep(90)
+
+def generate_daily_summary(keyword, keyword_id, date, db):
+    """
+    Tạo bài tổng hợp hàng ngày cho từng từ khóa sử dụng Gemini API.
+    """
+    # Lấy tất cả bài báo của từ khóa trong ngày
+    start_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_date = date.replace(hour=23, minute=59, second=59, microsecond=999999)
+    
+    articles = list(db.articles.find({
+        'keywords': ObjectId(keyword_id),
+        'crawled_at': {'$gte': start_date, '$lte': end_date}
+    }).sort('crawled_at', -1))
+    
+    if not articles or len(articles) < 3:  # Cần ít nhất 3 bài để tổng hợp
+        print(f"Không đủ bài báo để tổng hợp cho từ khóa '{keyword}' ngày {date.strftime('%Y-%m-%d')}")
+        return None
+    
+    # Chuẩn bị dữ liệu cho Gemini API
+    article_data = []
+    for i, article in enumerate(articles):
+        article_data.append({
+            'title': article['title'],
+            'url': article['real_link'],
+            'summary': article.get('summary', '')
+        })
+    
+    # Chuẩn bị prompt cho Gemini
+    prompt = f"""
+    Hãy tạo một bài báo tổng hợp về chủ đề "{keyword}" dựa trên các bài báo sau. Bài viết cần có đoạn mở đầu tổng quan về chủ đề, sau đó phân tích và tổng hợp thông tin từ các nguồn, và kết luận với nhận định tổng thể.
+
+    Yêu cầu quan trọng:
+    1. Viết như một bài báo chính thức, với văn phong mạch lạc, chuyên nghiệp, báo chí
+    2. Cấu trúc bài viết rõ ràng với các đề mục phù hợp
+    3. Mỗi khi đưa ra thông tin cụ thể từ một bài báo, PHẢI đặt tham chiếu đến bài báo gốc bằng cú pháp [source_name](URL)
+    4. Không sao chép nguyên văn, hãy diễn đạt lại bằng từ ngữ sáng tạo
+    5. Độ dài tùy ý, đảm bảo bao quát đầy đủ thông tin quan trọng
+    6. Đặt tựa đề phù hợp cho bài viết
+
+    Dữ liệu các bài báo gồm {len(article_data)} bài:
+    """
+    
+    for i, article in enumerate(article_data):
+        prompt += f"""
+        --- Bài {i+1} ---
+        Tiêu đề: {article['title']}
+        URL: {article['url']}
+        Nội dung: {article['summary']}
+        """
+    
+    try:
+        model = genai.GenerativeModel('gemini-1.5-pro')
+        response = model.generate_content(prompt)
+        summary_content = response.text.strip()
+
+        print(f"Gemini API, độ dài: {len(summary_content)}")
+        
+        # Tạo phiên bản plain text (không có HTML)
+        plain_content = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', summary_content)
+        
+        # Lưu bài tổng hợp vào database
+        article_ids = [article['_id'] for article in articles]
+        article_sources = list(set(article['source'] for article in articles))
+        
+        # Kiểm tra xem đã có bài tổng hợp cho từ khóa và ngày này chưa
+        existing_summary = db.daily_summaries.find_one({
+            'keyword_id': ObjectId(keyword_id),
+            'date': start_date
+        })
+        
+        if existing_summary:
+            # Cập nhật bài tổng hợp đã có
+            db.daily_summaries.update_one(
+                {'_id': existing_summary['_id']},
+                {
+                    '$set': {
+                        'content': summary_content,
+                        'plain_content': plain_content,
+                        'article_count': len(articles),
+                        'article_sources': article_sources,
+                        'article_ids': article_ids,
+                        'created_at': datetime.now(timezone.utc)
+                    }
+                }
+            )
+            summary_id = existing_summary['_id']
+        else:
+            # Tạo bài tổng hợp mới
+            summary_id = db.daily_summaries.insert_one({
+                'keyword_id': ObjectId(keyword_id),
+                'keyword_text': keyword,
+                'date': start_date,
+                'content': summary_content,
+                'plain_content': plain_content,
+                'article_count': len(articles),
+                'article_sources': article_sources,
+                'article_ids': article_ids,
+                'created_at': datetime.now(timezone.utc)
+            }).inserted_id
+        
+        print(f"Đã tạo bài tổng hợp cho từ khóa '{keyword}' ngày {date.strftime('%Y-%m-%d')}")
+        return summary_id
+    
+    except Exception as e:
+        print(f"Lỗi khi tạo bài tổng hợp cho từ khóa '{keyword}': {e}")
+        return None
+
+def generate_all_summaries():
+    """
+    Tạo bài tổng hợp cho tất cả từ khóa có bài báo mới trong ngày.
+    """
+    db = connect_to_mongodb()
+    if db is None:
+        print("Không thể kết nối đến MongoDB để tạo bài tổng hợp")
+        return
+    
+    # Lấy ngày hiện tại
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Lấy danh sách từ khóa có bài báo mới trong ngày
+    pipeline = [
+        {
+            '$match': {
+                'crawled_at': {'$gte': today}
+            }
+        },
+        {
+            '$unwind': '$keywords'
+        },
+        {
+            '$group': {
+                '_id': '$keywords',
+                'count': {'$sum': 1}
+            }
+        },
+        {
+            '$match': {
+                'count': {'$gte': 2}  # Chỉ tổng hợp từ khóa có ít nhất 2 bài
+            }
+        }
+    ]
+    
+    keyword_stats = list(db.articles.aggregate(pipeline))
+    
+    for stat in keyword_stats:
+        keyword_id = stat['_id']
+        keyword_data = db.keywords.find_one({'_id': keyword_id})
+        
+        if keyword_data:
+            generate_daily_summary(keyword_data['keyword'], keyword_id, today, db)
+            # Đợi 10 giây giữa các lần gọi API để tránh quá tải
+            time.sleep(12)
+
+# Cập nhật lịch trình trong hàm schedule_tasks
 def schedule_tasks():
-    schedule.every().day.at("08:00").do(crawl_all_keywords)
-
-    schedule.every().day.at("20:00").do(cleanup_collections)
+    # Lịch crawl tự động hàng ngày
+    schedule.every().day.at("07:00").do(auto_crawl_all_keywords)
+    
+    # Dọn dẹp bài báo và từ khóa không hoạt động
+    schedule.every().day.at("02:00").do(cleanup_expired_articles)
+    schedule.every().sunday.at("03:00").do(cleanup_inactive_keywords)
     
     def run_schedule():
         while True:
@@ -426,140 +701,619 @@ def schedule_tasks():
     
     threading.Thread(target=run_schedule, daemon=True).start()
 
+def serialize_mongo_doc(doc):
+    """Chuyển đổi các giá trị ObjectId và datetime trong document MongoDB thành định dạng có thể serialize."""
+    if doc is None:
+        return None
+    
+    if isinstance(doc, list):
+        return [serialize_mongo_doc(item) for item in doc]
+    
+    if isinstance(doc, dict):
+        for key, value in list(doc.items()):
+            if isinstance(value, ObjectId):
+                doc[key] = str(value)
+            elif isinstance(value, datetime):
+                doc[key] = value.isoformat()
+            elif isinstance(value, (dict, list)):
+                doc[key] = serialize_mongo_doc(value)
+        return doc
+    
+    if isinstance(doc, ObjectId):
+        return str(doc)
+    
+    if isinstance(doc, datetime):
+        return doc.isoformat()
+    
+    return doc
+
+# API đăng ký người dùng
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    data = request.get_json()
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
+    
+    if not username or not email or not password:
+        return jsonify({'error': 'Thiếu thông tin đăng ký'}), 400
+    
+    # Kiểm tra user đã tồn tại
+    if db.users.find_one({'$or': [{'username': username}, {'email': email}]}):
+        return jsonify({'error': 'Tên người dùng hoặc email đã tồn tại'}), 400
+    
+    # Mã hóa mật khẩu
+    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+    
+    # Thêm người dùng mới
+    user_id = db.users.insert_one({
+        'username': username,
+        'email': email,
+        'password': hashed_password,
+        'role': 'user',
+        'created_at': datetime.now(timezone.utc),
+        'last_login': datetime.now(timezone.utc)
+    }).inserted_id
+    
+    # Tạo token
+    access_token = create_access_token(identity=str(user_id))
+    
+    return jsonify({
+        'message': 'Đăng ký thành công',
+        'access_token': access_token
+    }), 201
+
+# API đăng nhập
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({'error': 'Vui lòng cung cấp tên đăng nhập và mật khẩu'}), 400
+    
+    user = db.users.find_one({'username': username})
+    
+    if user and bcrypt.check_password_hash(user['password'], password):
+        # Cập nhật thời gian đăng nhập
+        db.users.update_one({'_id': user['_id']}, {'$set': {'last_login': datetime.now(timezone.utc)}})
+        
+        # Tạo token
+        access_token = create_access_token(identity=str(user['_id']))
+        
+        return jsonify({
+            'message': 'Đăng nhập thành công',
+            'access_token': access_token,
+            'username': user['username']
+        }), 200
+    
+    return jsonify({'error': 'Tên đăng nhập hoặc mật khẩu không đúng'}), 401
+
+# API lấy thông tin người dùng
+@app.route('/api/user/profile', methods=['GET'])
+@jwt_required()
+def get_user_profile():
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    user_id = get_jwt_identity()
+    
+    user = db.users.find_one({'_id': ObjectId(user_id)}, {
+        '_id': 0,
+        'username': 1,
+        'email': 1,
+        'role': 1,
+        'created_at': 1,
+        'last_login': 1
+    })
+    
+    if not user:
+        return jsonify({'error': 'Không tìm thấy người dùng'}), 404
+    
+    return jsonify(user), 200
+
+# API lấy danh sách từ khóa của người dùng
 @app.route('/api/keywords', methods=['GET'])
+@jwt_required()
 def get_keywords():
     db = connect_to_mongodb()
     if db is None:
         return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
     
-    keywords_collection = db['keywords']
-    keywords = [k['keyword'] for k in keywords_collection.find()]
-    return jsonify({'keywords': keywords})
+    user_id = get_jwt_identity()
+    
+    # Lấy các từ khóa mà người dùng đã đăng ký
+    pipeline = [
+        {'$match': {'user_id': ObjectId(user_id)}},
+        {'$lookup': {
+            'from': 'keywords',
+            'localField': 'keyword_id',
+            'foreignField': '_id',
+            'as': 'keyword_info'
+        }},
+        {'$unwind': '$keyword_info'},
+        {'$project': {
+            'id': {'$toString': '$keyword_info._id'},
+            'keyword': '$keyword_info.keyword',
+            'last_crawled_at': '$keyword_info.last_crawled_at',
+            'article_count': '$keyword_info.article_count',
+            'subscribed_at': 1,
+            'notifications_enabled': 1
+        }}
+    ]
+    
+    subscriptions = list(db.user_keyword_subscriptions.aggregate(pipeline))
 
+    serialized_subscriptions = serialize_mongo_doc(subscriptions)
+    
+    return jsonify({'keywords': subscriptions})
+
+# API thêm từ khóa mới
 @app.route('/api/keywords', methods=['POST'])
+@jwt_required()
 def add_keyword():
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
     data = request.get_json()
     keyword = data.get('keyword')
     
     if not keyword:
         return jsonify({'error': 'Từ khóa không hợp lệ'}), 400
     
-    db = connect_to_mongodb()
-    if db is None:
-        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    user_id = get_jwt_identity()
     
-    keywords_collection = db['keywords']
-    if keywords_collection.find_one({'keyword': keyword}):
-        return jsonify({'message': f'Từ khóa "{keyword}" đã tồn tại'}), 200
+    # Kiểm tra từ khóa đã tồn tại chưa
+    existing_keyword = db.keywords.find_one({'keyword': keyword})
     
-    keywords_collection.insert_one({'keyword': keyword})
-    create_collection_with_ttl(db, keyword)
-    
-    return jsonify({'message': f'Đã thêm từ khóa "{keyword}"'}), 200
+    if not existing_keyword:
+        # Thêm từ khóa mới
+        keyword_id = db.keywords.insert_one({
+            'keyword': keyword,
+            'created_at': datetime.now(timezone.utc),
+            'created_by': ObjectId(user_id),
+            'status': 'active',
+            'article_count': 0
+        }).inserted_id
+    else:
+        keyword_id = existing_keyword['_id']
+        
+        # Kiểm tra người dùng đã đăng ký từ khóa này chưa
+        existing_subscription = db.user_keyword_subscriptions.find_one({
+            'user_id': ObjectId(user_id),
+            'keyword_id': keyword_id
+        })
 
-@app.route('/api/keywords/<keyword>', methods=['DELETE'])
-def delete_keyword(keyword):
+        
+        if existing_subscription:
+            return jsonify({'message': f'Đã đăng ký từ khóa "{keyword}"'}), 200
+    
+    # Thêm đăng ký từ khóa cho người dùng
+    db.user_keyword_subscriptions.insert_one({
+        'user_id': ObjectId(user_id),
+        'keyword_id': keyword_id,
+        'subscribed_at': datetime.now(timezone.utc),
+        'notifications_enabled': True
+    })
+    
+    return jsonify({
+        'message': f'Đã thêm từ khóa "{keyword}"', 
+        'id': str(keyword_id)
+    }), 200
+
+# API xóa đăng ký từ khóa
+@app.route('/api/keywords/<keyword_id>', methods=['DELETE'])
+@jwt_required()
+def unsubscribe_keyword(keyword_id):
     db = connect_to_mongodb()
     if db is None:
         return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
     
-    keywords_collection = db['keywords']
-    result = keywords_collection.delete_one({'keyword': keyword})
+    user_id = get_jwt_identity()
+    
+    # Xóa đăng ký từ khóa của người dùng
+    result = db.user_keyword_subscriptions.delete_one({
+        'user_id': ObjectId(user_id),
+        'keyword_id': ObjectId(keyword_id)
+    })
     
     if result.deleted_count > 0:
-        db.drop_collection(keyword)
-        return jsonify({'message': f'Đã xóa từ khóa "{keyword}" và collection tương ứng'}), 200
-    return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
+        return jsonify({'message': 'Đã hủy đăng ký từ khóa'}), 200
+    
+    return jsonify({'error': 'Không tìm thấy đăng ký từ khóa'}), 404
 
+# API bắt đầu crawl cho từ khóa
 @app.route('/api/crawl', methods=['POST'])
+@jwt_required()
 def start_crawl():
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
     data = request.get_json()
-    keyword = data.get('keyword')
+    keyword_id = data.get('keyword_id')
     
-    if not keyword:
-        return jsonify({'error': 'Từ khóa không hợp lệ'}), 400
+    if not keyword_id:
+        return jsonify({'error': 'Thiếu ID từ khóa'}), 400
     
-    db = connect_to_mongodb()
-    if db is None:
-        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    user_id = get_jwt_identity()
     
-    keywords_collection = db['keywords']
-    if not keywords_collection.find_one({'keyword': keyword}):
-        return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
+    # Kiểm tra từ khóa và quyền truy cập
+    keyword_data = db.keywords.find_one({'_id': ObjectId(keyword_id)})
+    if not keyword_data:
+        return jsonify({'error': 'Không tìm thấy từ khóa'}), 404
     
-    threading.Thread(target=crawl_in_background, args=(keyword, db)).start()
+    subscription = db.user_keyword_subscriptions.find_one({
+        'user_id': ObjectId(user_id),
+        'keyword_id': ObjectId(keyword_id)
+    })
     
-    return jsonify({'message': f'Đã bắt đầu crawl cho từ khóa "{keyword}"'}), 200
+    if not subscription:
+        return jsonify({'error': 'Bạn không có quyền truy cập từ khóa này'}), 403
+    
+    # Kiểm tra xem đang có job crawl nào đang chạy không
+    running_job = db.crawl_jobs.find_one({
+        'keyword_id': ObjectId(keyword_id),
+        'status': 'running'
+    })
+    
+    if running_job:
+        return jsonify({'message': 'Đang có tiến trình crawl đang chạy cho từ khóa này'}), 200
+    
+    # Tạo job crawl mới
+    job_id = db.crawl_jobs.insert_one({
+        'keyword_id': ObjectId(keyword_id),
+        'status': 'pending',
+        'started_at': datetime.now(timezone.utc),
+        'triggered_by': ObjectId(user_id)
+    }).inserted_id
+    
+    # Bắt đầu crawl trong luồng riêng
+    threading.Thread(target=crawl_in_background, args=(keyword_data['keyword'], db, keyword_id, job_id)).start()
+    
+    return jsonify({
+        'message': f'Đã bắt đầu crawl cho từ khóa "{keyword_data["keyword"]}"',
+        'job_id': str(job_id)
+    }), 200
 
+# API lấy bài báo theo từ khóa
 @app.route('/api/articles', methods=['GET'])
+@jwt_required()
 def get_articles():
-    keyword = request.args.get('keyword')
-    
-    if not keyword:
-        return jsonify({'error': 'Yêu cầu cung cấp từ khóa'}), 400
-    
     db = connect_to_mongodb()
     if db is None:
         return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
     
-    keywords_collection = db['keywords']
-    if not keywords_collection.find_one({'keyword': keyword}):
-        return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
+    keyword_id = request.args.get('keyword_id')
     
-    collection = db[keyword]
+    if not keyword_id:
+        return jsonify({'error': 'Yêu cầu cung cấp ID từ khóa'}), 400
     
-    articles = list(collection.find({}, {
-        '_id': 0,
-        'title': 1,
-        'link': 1,
-        'description': 1,
-        'pub_date': 1,
-        'content': 1,
-        'text_content': 1,
-        'source': 1,
-        'summary': 1,
-        'crawled_at': 1
-    }).sort('crawled_at', -1).limit(50))
+    user_id = get_jwt_identity()
     
-    return jsonify({'articles': articles})
+    # Kiểm tra quyền truy cập từ khóa
+    subscription = db.user_keyword_subscriptions.find_one({
+        'user_id': ObjectId(user_id),
+        'keyword_id': ObjectId(keyword_id)
+    })
+    
+    if not subscription:
+        return jsonify({'error': 'Bạn không có quyền truy cập từ khóa này'}), 403
+    
+    # Lấy thông tin từ khóa
+    keyword_data = db.keywords.find_one({'_id': ObjectId(keyword_id)})
+    if not keyword_data:
+        return jsonify({'error': 'Không tìm thấy từ khóa'}), 404
+    
+    # Lấy danh sách bài báo
+    articles = list(db.articles.find(
+        {'keywords': ObjectId(keyword_id)},
+        {
+            '_id': 1,
+            'title': 1,
+            'link': 1,
+            'description': 1,
+            'pub_date': 1,
+            'source': 1,
+            'summary': 1,
+            'crawled_at': 1
+        }
+    ).sort('crawled_at', -1).limit(50))
+    
+    # Chuyển ObjectId thành string
+    for article in articles:
+        article['_id'] = str(article['_id'])
+    
+    return jsonify({
+        'keyword': keyword_data['keyword'],
+        'articles': articles
+    })
 
-@app.route('/api/daily-report', methods=['GET'])
-def get_daily_report():
-    keyword = request.args.get('keyword')
-    
-    if not keyword:
-        return jsonify({'error': 'Yêu cầu cung cấp từ khóa'}), 400
-    
+# API lấy thông tin chi tiết bài báo
+@app.route('/api/articles/<article_id>', methods=['GET'])
+@jwt_required()
+def get_article_detail(article_id):
     db = connect_to_mongodb()
     if db is None:
         return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
     
-    keywords_collection = db['keywords']
-    if not keywords_collection.find_one({'keyword': keyword}):
-        return jsonify({'error': f'Từ khóa "{keyword}" không tồn tại'}), 404
+    user_id = get_jwt_identity()
     
-    collection = db[keyword]
+    # Lấy thông tin bài báo
+    article = db.articles.find_one({'_id': ObjectId(article_id)})
+    if not article:
+        return jsonify({'error': 'Không tìm thấy bài báo'}), 404
     
-    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    articles = list(collection.find({
-        'crawled_at': {'$gte': today}
-    }, {
-        '_id': 0,
-        'title': 1,
-        'link': 1,
-        'description': 1,
-        'summary': 1,
-        'source': 1
-    }).sort('crawled_at', -1))
+    # Kiểm tra quyền truy cập
+    keyword_ids = article.get('keywords', [])
+    has_access = False
+    
+    for keyword_id in keyword_ids:
+        subscription = db.user_keyword_subscriptions.find_one({
+            'user_id': ObjectId(user_id),
+            'keyword_id': keyword_id
+        })
+        if subscription:
+            has_access = True
+            break
+    
+    if not has_access:
+        return jsonify({'error': 'Bạn không có quyền truy cập bài báo này'}), 403
+    
+    # Chuyển ObjectId thành string
+    article['_id'] = str(article['_id'])
+    article['keywords'] = [str(kid) for kid in article['keywords']]
+    
+    return jsonify(article)
+
+# API lấy báo cáo tin tức theo từ khóa
+@app.route('/api/daily-report', methods=['GET'])
+@jwt_required()
+def get_daily_report():
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    keyword_id = request.args.get('keyword_id')
+    
+    if not keyword_id:
+        return jsonify({'error': 'Yêu cầu cung cấp ID từ khóa'}), 400
+    
+    user_id = get_jwt_identity()
+    
+    # Kiểm tra quyền truy cập từ khóa
+    subscription = db.user_keyword_subscriptions.find_one({
+        'user_id': ObjectId(user_id),
+        'keyword_id': ObjectId(keyword_id)
+    })
+    
+    if not subscription:
+        return jsonify({'error': 'Bạn không có quyền truy cập từ khóa này'}), 403
+    
+    # Lấy thông tin từ khóa
+    keyword_data = db.keywords.find_one({'_id': ObjectId(keyword_id)})
+    if not keyword_data:
+        return jsonify({'error': 'Không tìm thấy từ khóa'}), 404
+    
+    # Lấy bài báo trong ngày
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    articles = list(db.articles.find(
+        {
+            'keywords': ObjectId(keyword_id),
+            'crawled_at': {'$gte': today}
+        },
+        {
+            '_id': 1,
+            'title': 1,
+            'link': 1,
+            'description': 1,
+            'summary': 1,
+            'source': 1,
+            'crawled_at': 1
+        }
+    ).sort('crawled_at', -1))
+    
+    # Chuyển ObjectId thành string
+    for article in articles:
+        article['_id'] = str(article['_id'])
+    
+    # Thống kê theo nguồn
+    source_stats = {}
+    for article in articles:
+        source = article.get('source', 'Không xác định')
+        if source in source_stats:
+            source_stats[source] += 1
+        else:
+            source_stats[source] = 1
     
     report = {
-        'keyword': keyword,
-        'date': datetime.utcnow().strftime('%Y-%m-%d'),
+        'keyword': keyword_data['keyword'],
+        'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
         'total_articles': len(articles),
+        'source_stats': source_stats,
         'articles': articles
     }
     
     return jsonify(report)
+
+# API lấy lịch sử crawl của từ khóa
+@app.route('/api/crawl-history', methods=['GET'])
+@jwt_required()
+def get_crawl_history():
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    keyword_id = request.args.get('keyword_id')
+    
+    if not keyword_id:
+        return jsonify({'error': 'Yêu cầu cung cấp ID từ khóa'}), 400
+    
+    user_id = get_jwt_identity()
+    
+    # Kiểm tra quyền truy cập từ khóa
+    subscription = db.user_keyword_subscriptions.find_one({
+        'user_id': ObjectId(user_id),
+        'keyword_id': ObjectId(keyword_id)
+    })
+    
+    if not subscription:
+        return jsonify({'error': 'Bạn không có quyền truy cập từ khóa này'}), 403
+    
+    # Lấy lịch sử crawl
+    jobs = list(db.crawl_jobs.find(
+        {'keyword_id': ObjectId(keyword_id)},
+        {
+            '_id': 1,
+            'status': 1,
+            'started_at': 1,
+            'finished_at': 1,
+            'article_count': 1,
+            'error': 1
+        }
+    ).sort('started_at', -1).limit(10))
+    
+    # Chuyển ObjectId thành string
+    for job in jobs:
+        job['_id'] = str(job['_id'])
+    
+    return jsonify({'jobs': jobs})
+
+# API lấy danh sách bài tổng hợp theo từ khóa
+@app.route('/api/summaries', methods=['GET'])
+@jwt_required()
+def get_summaries():
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    keyword_id = request.args.get('keyword_id')
+    
+    if not keyword_id:
+        return jsonify({'error': 'Yêu cầu cung cấp ID từ khóa'}), 400
+    
+    user_id = get_jwt_identity()
+    
+    # Kiểm tra quyền truy cập từ khóa
+    subscription = db.user_keyword_subscriptions.find_one({
+        'user_id': ObjectId(user_id),
+        'keyword_id': ObjectId(keyword_id)
+    })
+    
+    if not subscription:
+        return jsonify({'error': 'Bạn không có quyền truy cập từ khóa này'}), 403
+    
+    # Lấy danh sách bài tổng hợp
+    summaries = list(db.daily_summaries.find(
+        {'keyword_id': ObjectId(keyword_id)},
+        {
+            '_id': 1,
+            'date': 1,
+            'article_count': 1,
+            'article_sources': 1,
+            'created_at': 1
+        }
+    ).sort('date', -1).limit(10))
+    
+    # Chuyển ObjectId thành string
+    for summary in summaries:
+        summary['_id'] = str(summary['_id'])
+    
+    return jsonify({'summaries': summaries})
+
+# API lấy chi tiết bài tổng hợp
+@app.route('/api/summaries/<summary_id>', methods=['GET'])
+@jwt_required()
+def get_summary_detail(summary_id):
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    user_id = get_jwt_identity()
+    
+    # Lấy thông tin bài tổng hợp
+    summary = db.daily_summaries.find_one({'_id': ObjectId(summary_id)})
+    if not summary:
+        return jsonify({'error': 'Không tìm thấy bài tổng hợp'}), 404
+    
+    # Kiểm tra quyền truy cập
+    subscription = db.user_keyword_subscriptions.find_one({
+        'user_id': ObjectId(user_id),
+        'keyword_id': summary['keyword_id']
+    })
+    
+    if not subscription:
+        return jsonify({'error': 'Bạn không có quyền truy cập bài tổng hợp này'}), 403
+    
+    # Chuyển ObjectId thành string
+    summary['_id'] = str(summary['_id'])
+    summary['keyword_id'] = str(summary['keyword_id'])
+    
+    # Chuyển danh sách ID bài báo thành string
+    if 'article_ids' in summary:
+        summary['article_ids'] = [str(aid) for aid in summary['article_ids']]
+    
+    return jsonify(summary)
+
+# API tạo lại bài tổng hợp
+@app.route('/api/summaries/regenerate', methods=['POST'])
+@jwt_required()
+def regenerate_summary():
+    db = connect_to_mongodb()
+    if db is None:
+        return jsonify({'error': 'Không thể kết nối đến cơ sở dữ liệu'}), 500
+    
+    data = request.get_json()
+    keyword_id = data.get('keyword_id')
+    date_str = data.get('date')  # Format: YYYY-MM-DD
+    
+    if not keyword_id or not date_str:
+        return jsonify({'error': 'Thiếu thông tin cần thiết'}), 400
+    
+    user_id = get_jwt_identity()
+    
+    # Kiểm tra quyền truy cập từ khóa
+    subscription = db.user_keyword_subscriptions.find_one({
+        'user_id': ObjectId(user_id),
+        'keyword_id': ObjectId(keyword_id)
+    })
+    
+    if not subscription:
+        return jsonify({'error': 'Bạn không có quyền truy cập từ khóa này'}), 403
+    
+    # Lấy thông tin từ khóa
+    keyword_data = db.keywords.find_one({'_id': ObjectId(keyword_id)})
+    if not keyword_data:
+        return jsonify({'error': 'Không tìm thấy từ khóa'}), 404
+    
+    try:
+        # Chuyển đổi date_str thành datetime
+        date = datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        
+        # Tạo lại bài tổng hợp
+        summary_id = generate_daily_summary(keyword_data['keyword'], keyword_id, date, db)
+        
+        if summary_id:
+            return jsonify({
+                'message': 'Đã tạo lại bài tổng hợp thành công',
+                'summary_id': str(summary_id)
+            }), 200
+        else:
+            return jsonify({'error': 'Không thể tạo bài tổng hợp'}), 500
+    
+    except Exception as e:
+        return jsonify({'error': f'Lỗi: {str(e)}'}), 500
 
 if __name__ == '__main__':
     schedule_tasks()

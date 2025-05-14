@@ -7,40 +7,95 @@
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
 </head>
 <body class="bg-gray-100 font-sans">
+  <!-- Sử dụng navigation chung -->
+  <%- include('partials/navigation') %>
+
   <div class="container mx-auto p-4">
     <h1 class="text-3xl font-bold mb-6 text-center">Quản lý từ khóa</h1>
 
-    <% if (typeof error !== 'undefined') { %>
+    <% if (typeof error !== 'undefined' && error) { %>
       <div class="bg-red-100 text-red-700 p-4 rounded mb-4">
         <%= error %>
       </div>
     <% } %>
 
-    <form action="/add-keyword" method="POST" class="mb-6">
-      <div class="flex items-center">
-        <input type="text" name="keyword" placeholder="Thêm từ khóa" class="border p-2 rounded-l w-full" required>
-        <button type="submit" class="bg-blue-500 text-white p-2 rounded-r hover:bg-blue-600">Thêm</button>
-      </div>
-    </form>
+    <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+      <h2 class="text-xl font-semibold mb-4">Thêm từ khóa mới</h2>
+      <form action="/add-keyword" method="POST" class="mb-0">
+        <div class="flex items-center">
+          <input type="text" name="keyword" placeholder="Nhập từ khóa cần theo dõi" class="border p-2 rounded-l w-full" required>
+          <button type="submit" class="bg-blue-500 text-white p-2 rounded-r hover:bg-blue-600">Thêm</button>
+        </div>
+      </form>
+    </div>
 
-    <div class="bg-white p-4 rounded shadow">
+    <div class="bg-white p-6 rounded-lg shadow-md">
       <h2 class="text-xl font-semibold mb-4">Danh sách từ khóa</h2>
       <% if (keywords.length === 0) { %>
-        <p class="text-gray-500">Chưa có từ khóa nào.</p>
+        <p class="text-gray-500">Bạn chưa có từ khóa nào. Hãy thêm từ khóa để bắt đầu thu thập tin tức!</p>
       <% } else { %>
-        <ul class="space-y-2">
-          <% keywords.forEach(keyword => { %>
-            <li class="flex justify-between items-center p-2 bg-gray-50 rounded">
-              <a href="/articles?keyword=<%= keyword %>" class="text-blue-500 hover:underline"><%= keyword %></a>
-              <form action="/delete-keyword" method="POST">
-                <input type="hidden" name="keyword" value="<%= keyword %>">
-                <button type="submit" class="text-red-500 hover:text-red-700">Xóa</button>
-              </form>
-            </li>
-          <% }) %>
-        </ul>
+        <div class="overflow-x-auto">
+          <table class="min-w-full bg-white">
+            <thead>
+              <tr class="bg-gray-200 text-gray-700">
+                <th class="py-2 px-4 text-left">Từ khóa</th>
+                <th class="py-2 px-4 text-center">Số bài viết</th>
+                <th class="py-2 px-4 text-center">Cập nhật lần cuối</th>
+                <th class="py-2 px-4 text-center">Thao tác</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% keywords.forEach(keyword => { %>
+                <tr class="border-b hover:bg-gray-50">
+                  <td class="py-3 px-4">
+                    <a href="/articles?keywordId=<%= keyword.id %>" class="text-blue-500 hover:underline font-medium">
+                      <%= keyword.keyword %>
+                    </a>
+                  </td>
+                  <td class="py-3 px-4 text-center">
+                    <%= keyword.article_count || 0 %>
+                  </td>
+                  <td class="py-3 px-4 text-center">
+                    <% if (keyword.last_crawled_at) { %>
+                      <%= new Date(keyword.last_crawled_at).toLocaleString('vi-VN') %>
+                    <% } else { %>
+                      Chưa cập nhật
+                    <% } %>
+                  </td>
+                  <td class="py-3 px-4 text-center">
+                    <div class="flex items-center justify-center space-x-2">
+                      <a href="/articles?keywordId=<%= keyword.id %>" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 text-sm">
+                        Xem bài viết
+                      </a>
+                      <form action="/delete-keyword" method="POST" onsubmit="return confirm('Bạn có chắc muốn xóa từ khóa này?')">
+                        <input type="hidden" name="keywordId" value="<%= keyword.id %>">
+                        <button type="submit" class="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600 text-sm">Xóa</button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
       <% } %>
     </div>
+    
+    <div class="mt-6 p-6 bg-white rounded-lg shadow-md">
+      <h2 class="text-xl font-semibold mb-4">Hướng dẫn sử dụng</h2>
+      <div class="space-y-2 text-gray-700">
+        <p><strong>1. Thêm từ khóa</strong>: Nhập từ khóa bạn muốn theo dõi tin tức và nhấn nút "Thêm".</p>
+        <p><strong>2. Xem bài viết</strong>: Nhấn vào tên từ khóa hoặc nút "Xem bài viết" để xem các bài báo liên quan.</p>
+        <p><strong>3. Cập nhật tin tức</strong>: Trong trang bài viết, bạn có thể nhấn "Cập nhật bài báo mới" để crawl thêm tin tức mới.</p>
+        <p><strong>4. Xóa từ khóa</strong>: Nếu không còn muốn theo dõi từ khóa nào, hãy nhấn nút "Xóa".</p>
+      </div>
+    </div>
   </div>
+
+  <footer class="bg-white p-4 mt-8 border-t">
+    <div class="container mx-auto text-center text-gray-600">
+      <p>&copy; 2025 Hệ thống Crawl Tin tức. Tất cả quyền được bảo lưu.</p>
+    </div>
+  </footer>
 </body>
 </html>

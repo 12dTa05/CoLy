@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chi tiết bài tổng hợp</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <style>
+    .summary-content {
+      line-height: 1.8;
+    }
+    .summary-content h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      margin-top: 1.5rem;
+    }
+    .summary-content h2 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      margin-top: 1.5rem;
+    }
+    .summary-content h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      margin-top: 1.25rem;
+    }
+    .summary-content p {
+      margin-bottom: 1rem;
+    }
+    .summary-content a {
+      color: #3b82f6;
+      text-decoration: none;
+    }
+    .summary-content a:hover {
+      text-decoration: underline;
+    }
+    .summary-content ul, .summary-content ol {
+      margin-bottom: 1rem;
+      padding-left: 1.5rem;
+    }
+    .summary-content ul {
+      list-style-type: disc;
+    }
+    .summary-content ol {
+      list-style-type: decimal;
+    }
+    .summary-content li {
+      margin-bottom: 0.5rem;
+    }
+    .summary-content blockquote {
+      border-left: 4px solid #e5e7eb;
+      padding-left: 1rem;
+      font-style: italic;
+      margin: 1rem 0;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 font-sans">
+  <!-- Sử dụng navigation chung -->
+  <%- include('partials/navigation') %>
+
+  <div class="container mx-auto p-4">
+    <!-- Error Message -->
+    <% if (typeof error !== 'undefined' && error) { %>
+      <div class="bg-red-100 text-red-700 p-4 rounded mb-4">
+        <%= error %>
+      </div>
+    <% } %>
+
+    <% if (summary) { %>
+      <div class="mb-6 flex justify-between items-center">
+        <h1 class="text-3xl font-bold">Bài tổng hợp ngày <%= new Date(summary.date).toLocaleDateString('vi-VN') %></h1>
+        <div class="space-x-4">
+          <a href="/summaries?keywordId=<%= summary.keyword_id %>" class="text-blue-500 hover:underline">
+            ← Quay lại danh sách
+          </a>
+        </div>
+      </div>
+
+      <!-- Summary Meta Info -->
+      <div class="bg-white p-4 rounded shadow-md mb-6">
+        <div class="flex flex-wrap gap-4">
+          <div class="flex items-center">
+            <span class="font-medium mr-2">Từ khóa:</span>
+            <span><%= summary.keyword_text %></span>
+          </div>
+          <div class="flex items-center">
+            <span class="font-medium mr-2">Số bài báo:</span>
+            <span><%= summary.article_count %></span>
+          </div>
+          <div class="flex items-center">
+            <span class="font-medium mr-2">Nguồn:</span>
+            <span><%= summary.article_sources.join(', ') %></span>
+          </div>
+          <div class="flex items-center">
+            <span class="font-medium mr-2">Ngày tạo:</span>
+            <span><%= new Date(summary.created_at).toLocaleString('vi-VN') %></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Print and Share Buttons -->
+      <div class="bg-white p-4 rounded shadow-md mb-6 flex justify-end space-x-3">
+        <button onclick="window.print()" class="bg-gray-500 text-white px-3 py-1 rounded hover:bg-gray-600 flex items-center">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M5 4v3H4a2 2 0 00-2 2v3a2 2 0 002 2h1v2a2 2 0 002 2h6a2 2 0 002-2v-2h1a2 2 0 002-2V9a2 2 0 00-2-2h-1V4a2 2 0 00-2-2H7a2 2 0 00-2 2zm8 0H7v3h6V4zm0 8H7v4h6v-4z" clip-rule="evenodd" />
+          </svg>
+          In bài viết
+        </button>
+        <button onclick="copyToClipboard()" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 flex items-center">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+            <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+          </svg>
+          Sao chép link
+        </button>
+      </div>
+
+      <!-- Summary Content -->
+      <div class="bg-white p-6 rounded shadow-md mb-6">
+        <div class="summary-content prose lg:prose-lg max-w-none">
+          <%- summary.content %>
+        </div>
+      </div>
+
+      <!-- Regenerate Button -->
+      <div class="bg-white p-4 rounded shadow-md mb-6 flex justify-center">
+        <form action="/regenerate-summary" method="POST">
+          <input type="hidden" name="keywordId" value="<%= summary.keyword_id %>">
+          <input type="hidden" name="date" value="<%= new Date(summary.date).toISOString().split('T')[0] %>">
+          <button type="submit" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 flex items-center">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+            </svg>
+            Tạo lại bài tổng hợp
+          </button>
+        </form>
+      </div>
+    <% } else { %>
+      <div class="bg-white p-6 rounded shadow-md">
+        <p class="text-gray-500">Không tìm thấy bài tổng hợp.</p>
+        <a href="/summaries" class="text-blue-500 hover:underline block mt-4">Quay lại danh sách</a>
+      </div>
+    <% } %>
+  </div>
+
+  <footer class="bg-white p-4 mt-8 border-t">
+    <div class="container mx-auto text-center text-gray-600">
+      <p>&copy; 2025 Hệ thống Crawl Tin tức. Tất cả quyền được bảo lưu.</p>
+    </div>
+  </footer>
+
+  <script>
+    function copyToClipboard() {
+      const url = window.location.href;
+      navigator.clipboard.writeText(url).then(() => {
+        alert('Đã sao chép liên kết vào clipboard!');
+      });
+    }
+  </script>
+</body>
+</html>
