@@ -68,9 +68,7 @@ app.config['JWT_SECRET_KEY'] = 'your-secret-key-change-in-production'
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
 jwt = JWTManager(app)
 
-# Cấu hình Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI") #AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE , AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU, AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI
-genai.configure(api_key=GEMINI_API_KEY)
+
 
 def connect_to_mongodb():
     try:
@@ -95,7 +93,11 @@ def summarize_content(keyword, content, max_sentences=12): #GeminiAPI
         return 'None'
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Cấu hình Gemini API
+        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI") #AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE , AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU, AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI
+        genai.configure(api_key=GEMINI_API_KEY)
+
+        model = genai.GenerativeModel('gemini-2.0-flash')
         prompt = (
             f"Hãy đọc nội dung sau và so sánh với nội dung mà từ khóa '{keyword}' yêu cầu."
             f"Nếu nội dung không liên quan hoặc không phù hợp, hãy trả về đúng một dòng: 'None'."
@@ -533,44 +535,124 @@ def auto_crawl_all_keywords():
 
             time.sleep(90)
 
-def generate_daily_summary(keyword, keyword_id, date, db):
-    """
-    Tạo bài tổng hợp hàng ngày cho từng từ khóa sử dụng Gemini API.
-    """
-    # Lấy tất cả bài báo của từ khóa trong ngày
-    start_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_date = date.replace(hour=23, minute=59, second=59, microsecond=999999)
-    
-    articles = list(db.articles.find({
-        'keywords': ObjectId(keyword_id),
-        'crawled_at': {'$gte': start_date, '$lte': end_date}
-    }).sort('crawled_at', -1))
-    
-    if not articles or len(articles) < 3:  # Cần ít nhất 3 bài để tổng hợp
-        print(f"Không đủ bài báo để tổng hợp cho từ khóa '{keyword}' ngày {date.strftime('%Y-%m-%d')}")
-        return None
-    
-    # Chuẩn bị dữ liệu cho Gemini API
+# Hàm tổng hợp cho một nhóm bài báo
+def summarize_group(keyword, group_articles, level=1):
     article_data = []
-    for i, article in enumerate(articles):
+    for i, article in enumerate(group_articles):
+        if level == 1:  # Cấp đầu tiên: lấy từ bài báo gốc
+            article_data.append({
+                'title': article['title'],
+                'url': article['real_link'],
+                'summary': article.get('summary', '')
+            })
+        else:  # Cấp cao hơn: lấy từ bài tổng hợp cấp thấp hơn
+            article_data.append({
+                'title': f"Tổng hợp cấp {level-1}",
+                'content': article
+            })
+    
+    if level == 1:
+        prompt = f"""
+        Hãy tạo một đoạn tổng hợp về chủ đề "{keyword}" dựa trên các bài báo sau. 
+        Đoạn tổng hợp cần ngắn gọn nhưng vẫn bao quát những thông tin quan trọng.
+        Dữ liệu các bài báo:
+        """
+        
+        for i, article in enumerate(article_data):
+            prompt += f"""
+            --- Bài {i+1} ---
+            Tiêu đề: {article['title']}
+            URL: {article['url']}
+            Nội dung: {article['summary']}
+            """
+    else:
+        prompt = f"""
+        Hãy tạo một đoạn tổng hợp về chủ đề "{keyword}" dựa trên các bài báo sau.
+        Đoạn tổng hợp cần ngắn gọn nhưng vẫn bao quát những thông tin quan trọng.
+        Dữ liệu các bài báo:
+        """
+        
+        for i, article in enumerate(article_data):
+            prompt += f"""
+            --- Tổng hợp {i+1} ---
+            {article['content']}
+            """
+    
+    try:
+        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE") #AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE , AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU, AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content(prompt)
+        summary = response.text.strip()
+        return summary
+    except Exception as e:
+        print(f"Lỗi khi tổng hợp cấp {level}: {e}")
+        return None   
+
+def hierarchical_summarize(keyword, all_articles):
+    group_size = 3
+    
+    if len(all_articles) <= group_size * 2:
+        return final_summarize(all_articles)
+    
+    # Cấp 1: Chia bài báo thành các nhóm nhỏ và tổng hợp
+    level1_groups = [all_articles[i:i+group_size] for i in range(0, len(all_articles), group_size)]
+    level1_summaries = []
+    
+    for group in level1_groups:
+        summary = summarize_group(keyword, group, level=1)
+        if summary:
+            level1_summaries.append(summary)
+    
+    # Nếu chỉ còn 1 bài tổng hợp, trả về kết quả
+    if len(level1_summaries) == 1:
+        return level1_summaries[0]
+    
+    # Tiếp tục tổng hợp cấp cao hơn cho đến khi chỉ còn 1 bài
+    current_level = 2
+    current_summaries = level1_summaries
+    
+    while len(current_summaries) > 1:
+        next_level_groups = [current_summaries[i:i+group_size] for i in range(0, len(current_summaries), group_size)]
+        next_level_summaries = []
+        
+        for group in next_level_groups:
+            summary = summarize_group(keyword, group, level=current_level)
+            if summary:
+                next_level_summaries.append(summary)
+        
+        current_summaries = next_level_summaries
+        current_level += 1
+        
+        if len(current_summaries) == 1:
+            break
+    
+    return current_summaries[0]
+
+def final_summarize(keyword, articles_for_final):
+    article_data = []
+    article_ids = [article['_id'] for article in articles_for_final]
+    article_sources = list(set(article['source'] for article in articles_for_final))
+    
+    for i, article in enumerate(articles_for_final):
         article_data.append({
             'title': article['title'],
             'url': article['real_link'],
             'summary': article.get('summary', '')
         })
     
-    # Chuẩn bị prompt cho Gemini
+    # Prompt cho tổng hợp cuối cùng
     prompt = f"""
     Hãy tạo một bài báo tổng hợp về chủ đề "{keyword}" dựa trên các bài báo sau. Bài viết cần có đoạn mở đầu tổng quan về chủ đề, sau đó phân tích và tổng hợp thông tin từ các nguồn, và kết luận với nhận định tổng thể.
-
+    Yêu cầu quan trọng:
     Yêu cầu quan trọng:
     1. Viết như một bài báo chính thức, với văn phong mạch lạc, chuyên nghiệp, báo chí
     2. Cấu trúc bài viết rõ ràng với các đề mục phù hợp
-    3. Mỗi khi đưa ra thông tin cụ thể từ một bài báo, PHẢI đặt tham chiếu đến bài báo gốc bằng cú pháp [source_name](URL)
-    4. Không sao chép nguyên văn, hãy diễn đạt lại bằng từ ngữ sáng tạo
-    5. Độ dài tùy ý, đảm bảo bao quát đầy đủ thông tin quan trọng
-    6. Đặt tựa đề phù hợp cho bài viết
-
+    3. Mỗi khi đưa ra thông tin cụ thể từ một bài báo, PHẢI đặt tham chiếu đến bài báo đó bằng số trong ngoặc vuông, ví dụ: [1], [2], ... tương ứng với số thứ tự bài báo dưới đây
+    4. KHÔNG sử dụng cú pháp [tên nguồn](URL) mà chỉ dùng [số]
+    5. Không sao chép nguyên văn, hãy diễn đạt lại bằng từ ngữ sáng tạo
+    6. Độ dài tùy ý, đảm bảo bao quát đầy đủ thông tin quan trọng
+    7. Đặt tựa đề phù hợp cho bài viết
     Dữ liệu các bài báo gồm {len(article_data)} bài:
     """
     
@@ -583,61 +665,87 @@ def generate_daily_summary(keyword, keyword_id, date, db):
         """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU") #AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE , AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU, AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-2.0-flash')
         response = model.generate_content(prompt)
         summary_content = response.text.strip()
+        
+        # Lưu thông tin về nguồn
+        source_mapping = {}
+        for i, article in enumerate(articles_for_final):
+            source_mapping[str(i+1)] = {
+                'url': article['real_link'],
+                'title': article['title'],
+                'source': article['source']
+            }
+        
+        return summary_content, article_ids, article_sources, source_mapping
+    except Exception as e:
+        print(f"Lỗi khi tạo bài tổng hợp cuối: {e}")
+        return None, None, None, None
 
-        print(f"Gemini API, độ dài: {len(summary_content)}")
-        
-        # Tạo phiên bản plain text (không có HTML)
-        plain_content = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', summary_content)
-        
-        # Lưu bài tổng hợp vào database
-        article_ids = [article['_id'] for article in articles]
-        article_sources = list(set(article['source'] for article in articles))
-        
-        # Kiểm tra xem đã có bài tổng hợp cho từ khóa và ngày này chưa
-        existing_summary = db.daily_summaries.find_one({
+def generate_daily_summary(keyword, keyword_id, date, db):
+    # Lấy tất cả bài báo của từ khóa trong ngày
+    start_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_date = date.replace(hour=23, minute=59, second=59, microsecond=999999)
+    
+    articles = list(db.articles.find({
+        'keywords': ObjectId(keyword_id),
+        'crawled_at': {'$gte': start_date, '$lte': end_date}
+    }).sort('crawled_at', -1))
+    
+    if not articles or len(articles) < 3:  # Cần ít nhất 3 bài để tổng hợp
+        print(f"Không đủ bài báo để tổng hợp cho từ khóa '{keyword}' ngày {date.strftime('%Y-%m-%d')}")
+        return None
+
+    # Thực hiện tổng hợp đa cấp
+    interim_summary = hierarchical_summarize(keyword, articles)
+    
+    # Tạo bài tổng hợp cuối cùng
+    summary_content, article_ids, article_sources, source_mapping = final_summarize(keyword, articles)
+    
+    if not summary_content:
+        return None
+    
+    # Tạo phiên bản plain text (không có HTML)
+    plain_content = re.sub(r'\[\d+\]', '', summary_content)
+    
+    # Kiểm tra xem đã có bài tổng hợp cho từ khóa và ngày này chưa
+    existing_summary = db.daily_summaries.find_one({
+        'keyword_id': ObjectId(keyword_id),
+        'date': start_date
+    })
+    
+    # Chuẩn bị dữ liệu để lưu
+    summary_data = {
+        'content': summary_content,
+        'plain_content': plain_content,
+        'article_count': len(articles),
+        'article_sources': article_sources,
+        'article_ids': article_ids,
+        'source_mapping': source_mapping,  # Lưu mapping giữa số tham chiếu và URL
+        'created_at': datetime.now(timezone.utc)
+    }
+    
+    if existing_summary:
+        # Cập nhật bài tổng hợp đã có
+        db.daily_summaries.update_one(
+            {'_id': existing_summary['_id']},
+            {'$set': summary_data}
+        )
+        summary_id = existing_summary['_id']
+    else:
+        # Tạo bài tổng hợp mới
+        summary_data.update({
             'keyword_id': ObjectId(keyword_id),
+            'keyword_text': keyword,
             'date': start_date
         })
-        
-        if existing_summary:
-            # Cập nhật bài tổng hợp đã có
-            db.daily_summaries.update_one(
-                {'_id': existing_summary['_id']},
-                {
-                    '$set': {
-                        'content': summary_content,
-                        'plain_content': plain_content,
-                        'article_count': len(articles),
-                        'article_sources': article_sources,
-                        'article_ids': article_ids,
-                        'created_at': datetime.now(timezone.utc)
-                    }
-                }
-            )
-            summary_id = existing_summary['_id']
-        else:
-            # Tạo bài tổng hợp mới
-            summary_id = db.daily_summaries.insert_one({
-                'keyword_id': ObjectId(keyword_id),
-                'keyword_text': keyword,
-                'date': start_date,
-                'content': summary_content,
-                'plain_content': plain_content,
-                'article_count': len(articles),
-                'article_sources': article_sources,
-                'article_ids': article_ids,
-                'created_at': datetime.now(timezone.utc)
-            }).inserted_id
-        
-        print(f"Đã tạo bài tổng hợp cho từ khóa '{keyword}' ngày {date.strftime('%Y-%m-%d')}")
-        return summary_id
+        summary_id = db.daily_summaries.insert_one(summary_data).inserted_id
     
-    except Exception as e:
-        print(f"Lỗi khi tạo bài tổng hợp cho từ khóa '{keyword}': {e}")
-        return None
+    print(f"Đã tạo bài tổng hợp cho từ khóa '{keyword}' ngày {date.strftime('%Y-%m-%d')}")
+    return summary_id
 
 def generate_all_summaries():
     """
@@ -1263,6 +1371,11 @@ def get_summary_detail(summary_id):
     # Chuyển danh sách ID bài báo thành string
     if 'article_ids' in summary:
         summary['article_ids'] = [str(aid) for aid in summary['article_ids']]
+
+    if 'source_mapping' in summary:
+        summary['source_mapping'] = serialize_mongo_doc(summary['source_mapping'])
+    else:
+        summary['source_mapping'] = {}
     
     return jsonify(summary)
 

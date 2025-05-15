@@ -122,10 +122,73 @@
       <!-- Summary Content -->
       <div class="bg-white p-6 rounded shadow-md mb-6">
         <div class="summary-content prose lg:prose-lg max-w-none">
-          <%- summary.content %>
+          <% 
+          // Xử lý nội dung để thay thế tham chiếu [số] thành link
+          let processedContent = summary.content;
+          
+          // Tìm tất cả các tham chiếu với regex: \[(\d+)\]
+          // Nhóm 1: số tham chiếu
+          const refRegex = /\[(\d+)\]/g;
+          let match;
+          
+          // Lưu tạm các tham chiếu đã xử lý để tránh thay thế trùng lặp
+          const processedRefs = new Set();
+          
+          // Tạo bản sao của nội dung để xử lý
+          let tempContent = processedContent;
+          
+          while ((match = refRegex.exec(processedContent)) !== null) {
+            const refNum = match[1];
+            
+            // Tránh xử lý trùng lặp
+            if (processedRefs.has(refNum)) continue;
+            processedRefs.add(refNum);
+            
+            // Lấy URL từ source_mapping nếu có
+            let url = '#';
+            if (summary.source_mapping && summary.source_mapping[refNum]) {
+                url = summary.source_mapping[refNum].url;
+            }
+            
+            // Tạo mẫu tham chiếu
+            const refPattern = new RegExp(`\\[${refNum}\\]`, 'g');
+            tempContent = tempContent.replace(refPattern, 
+                `<a href="${url}" target="_blank" class="citation-link">[${refNum}]</a>`);
+          }
+          
+          // Cập nhật nội dung đã xử lý
+          processedContent = tempContent;
+
+          processedContent = processedContent.replace(/##\s+(.+)$/gm, '<h2 class="text-2xl font-bold my-4">$1</h2>');
+    
+          processedContent = processedContent.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+          
+          processedContent = processedContent.replace(/\n\n/g, '</p><p class="mb-4">');
+          processedContent = '<p class="mb-4">' + processedContent + '</p>';
+          %>
+          
+          <%- processedContent %>
+          
+          <!-- Thêm phần tham chiếu ở cuối bài (tùy chọn) -->
+          <!-- <% if (summary.source_mapping && Object.keys(summary.source_mapping).length > 0) { %>
+          <div class="mt-8 pt-4 border-t">
+            <h3 class="text-xl font-semibold mb-3">Tham khảo</h3>
+            <ol class="list-decimal pl-6">
+              <% Object.keys(summary.source_mapping).forEach(num => { %>
+                <li class="mb-2">
+                  <a href="<%= summary.source_mapping[num].url %>" target="_blank" class="text-blue-600 hover:underline">
+                    <%= summary.source_mapping[num].title %> 
+                    <% if (summary.source_mapping[num].source) { %>
+                        <span class="text-gray-600">(<%= summary.source_mapping[num].source %>)</span>
+                    <% } %>
+                  </a>
+                </li>
+              <% }) %>
+            </ol>
+          </div>
+          <% } %> -->
         </div>
       </div>
-
       <!-- Regenerate Button -->
       <div class="bg-white p-4 rounded shadow-md mb-6 flex justify-center">
         <form action="/regenerate-summary" method="POST">
