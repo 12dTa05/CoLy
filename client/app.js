@@ -259,7 +259,7 @@ app.get('/summaries/:summaryId', isAuthenticated, async (req, res) => {
     
     const summary = response.data;
     
-    res.render('summary-detail', { 
+    res.render('summaries-detail', { 
       summary, 
       keywordId: summary.keyword_id,  // Thêm biến này để sử dụng trong navigation
       username: req.session.username
@@ -270,7 +270,7 @@ app.get('/summaries/:summaryId', isAuthenticated, async (req, res) => {
     if (error.response?.status === 401) {
       return res.redirect('/login');
     }
-    res.render('summary-detail', { 
+    res.render('summaries-detail', { 
       summary: null, 
       keywordId: null,  // Thêm biến này để sử dụng trong navigation
       username: req.session.username,
