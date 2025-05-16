@@ -59,11 +59,9 @@
   </style>
 </head>
 <body class="bg-gray-100 font-sans">
-  <!-- Sử dụng navigation chung -->
   <%- include('partials/navigation') %>
 
   <div class="container mx-auto p-4">
-    <!-- Error Message -->
     <% if (typeof error !== 'undefined' && error) { %>
       <div class="bg-red-100 text-red-700 p-4 rounded mb-4">
         <%= error %>
@@ -75,7 +73,7 @@
         <h1 class="text-3xl font-bold">Ngày <%= new Date(summary.date).toLocaleDateString('vi-VN') %></h1>
         <div class="space-x-4">
           <a href="/summaries?keywordId=<%= summary.keyword_id %>" class="text-blue-500 hover:underline">
-            ← Quay lại danh sách
+            Quay lại danh sách
           </a>
         </div>
       </div>
@@ -102,35 +100,33 @@
         </div>
       </div> -->
 
-      <!-- Summary Content -->
+      <!-- Summary -->
       <div class="bg-white p-6 rounded shadow-md mb-6">
         <div class="summary-content prose lg:prose-lg max-w-none">
           <% 
-          // Xử lý nội dung để thay thế tham chiếu [số] thành link
+          // xử lý để thay thế tham chiếu [số] thành link
           let processedContent = summary.content;
 
-          // Tạo bản sao của nội dung để xử lý
           let tempContent = processedContent;
 
-          // Lưu tạm các tham chiếu đã xử lý để tránh thay thế trùng lặp
+          // lưu tạm các tham chiếu đã xử lý để tránh thay thế trùng lặp
           const processedRefs = new Set();
 
-          // Tìm tất cả các tham chiếu với regex
+          // tìm tất cả các tham chiếu với regex
           const referenceRegex = /\[(\d+(?:,\s*\d+)*)\]/g;
           let referenceMatch;
 
           while ((referenceMatch = referenceRegex.exec(processedContent)) !== null) {
             const refStr = referenceMatch[1];
-            // Bỏ qua nếu đã xử lý chuỗi tham chiếu này
             if (processedRefs.has(refStr)) {
               continue;
             }
             processedRefs.add(refStr);
             
-            // Tách các số tham chiếu thành mảng
+            // tách các số tham chiếu thành mảng
             const refNums = refStr.split(',').map(num => num.trim());
             
-            // Tạo HTML cho tham chiếu
+            // tạo HTML cho tham chiếu
             let refHtml = '[';
             for (let i = 0; i < refNums.length; i++) {
               const refNum = refNums[i];
@@ -146,12 +142,11 @@
             }
             refHtml += ']';
             
-            // Tạo mẫu tham chiếu để thay thế
+            // tạo mẫu tham chiếu để thay thế
             const refPattern = new RegExp('\\[' + refStr.replace(/,/g, ',\\s*') + '\\]', 'g');
             tempContent = tempContent.replace(refPattern, refHtml);
           }
 
-          // Cập nhật nội dung đã xử lý
           processedContent = tempContent;
 
           processedContent = processedContent.replace(/##\s+(.+)$/gm, '<h2 class="text-2xl font-bold my-4">$1</h2>');
@@ -164,7 +159,7 @@
           
           <%- processedContent %>
           
-          <!-- Thêm phần tham chiếu ở cuối bài (tùy chọn) -->
+          <!-- Thêm phần tham chiếu ở cuối bài -->
           <!-- <% if (summary.source_mapping && Object.keys(summary.source_mapping).length > 0) { %>
           <div class="mt-8 pt-4 border-t">
             <h3 class="text-xl font-semibold mb-3">Tham khảo</h3>
@@ -207,17 +202,7 @@
 
   <footer class="bg-white p-4 mt-8 border-t">
     <div class="container mx-auto text-center text-gray-600">
-      <p>&copy; 2025 Hệ thống Crawl Tin tức. Tất cả quyền được bảo lưu.</p>
     </div>
   </footer>
-
-  <script>
-    function copyToClipboard() {
-      const url = window.location.href;
-      navigator.clipboard.writeText(url).then(() => {
-        alert('Đã sao chép liên kết vào clipboard!');
-      });
-    }
-  </script>
 </body>
 </html>

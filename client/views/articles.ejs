@@ -7,7 +7,6 @@
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
 </head>
 <body class="bg-gray-100 font-sans">
-  <!-- Sử dụng navigation chung -->
   <%- include('partials/navigation') %>
 
   <div class="container mx-auto p-4">
@@ -16,16 +15,14 @@
       <a href="/" class="text-blue-500 hover:underline">← Quay lại danh sách từ khóa</a>
     </div>
 
-    <!-- Error Message -->
     <% if (typeof error !== 'undefined' && error) { %>
       <div class="bg-red-100 text-red-700 p-4 rounded mb-4">
         <%= error %>
       </div>
     <% } %>
 
-    <!-- Top controls -->
     <div class="bg-white p-4 rounded shadow-md mb-6">
-      <!-- Keyword Selector Form -->
+      <!-- Keyword Selector -->
       <div class="flex flex-wrap items-center justify-between">
         <div class="mb-2 md:mb-0">
           <form action="/articles" method="GET" class="flex items-center">
@@ -38,7 +35,6 @@
           </form>
         </div>
         
-        <!-- Action Buttons -->
         <div class="flex space-x-2">
           <form action="/start-crawl" method="POST">
             <input type="hidden" name="keywordId" value="<%= keywordId %>">
@@ -66,14 +62,13 @@
       </div>
     </div>
 
-    <!-- Filter Controls -->
+    <!-- Filter -->
     <div class="bg-white p-4 rounded shadow-md mb-6">
       <div class="flex flex-wrap items-center">
         <div class="mr-4 mb-2 md:mb-0">
           <label for="sourceFilter" class="mr-2 font-medium">Lọc theo nguồn:</label>
           <select id="sourceFilter" class="border p-2 rounded" onchange="filterArticles()">
             <option value="">Tất cả</option>
-            <!-- Sources will be added dynamically with JavaScript -->
           </select>
         </div>
         
@@ -94,7 +89,7 @@
       </div>
     </div>
 
-    <!-- Articles Stats -->
+    <!-- Articles -->
     <div class="bg-white p-4 rounded shadow-md mb-6">
       <div class="flex flex-wrap">
         <!-- <div class="w-full md:w-1/3 px-2 mb-4 md:mb-0">
@@ -118,7 +113,7 @@
       </div>
     </div>
 
-    <!-- Articles List -->
+    <!-- List -->
     <div class="bg-white p-6 rounded shadow-md">
       <h2 class="text-xl font-semibold mb-4">Bài báo <%= keyword ? `cho từ khóa "${keyword}"` : '' %></h2>
       <% if (articles.length === 0) { %>

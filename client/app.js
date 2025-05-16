@@ -19,7 +19,7 @@ app.use(session({
   cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 } // 24 giờ
 }));
 
-// Middleware kiểm tra đăng nhập
+// middleware kiểm tra đăng nhập
 const isAuthenticated = (req, res, next) => {
   if (req.session.token) {
     return next();
@@ -27,12 +27,10 @@ const isAuthenticated = (req, res, next) => {
   res.redirect('/login');
 };
 
-// Trang đăng nhập
 app.get('/login', (req, res) => {
   res.render('login', { error: null });
 });
 
-// Xử lý đăng nhập
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
   try {
@@ -46,12 +44,10 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// Trang đăng ký
 app.get('/register', (req, res) => {
   res.render('register', { error: null });
 });
 
-// Xử lý đăng ký
 app.post('/register', async (req, res) => {
   const { username, email, password, confirmPassword } = req.body;
   
@@ -69,7 +65,6 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// Đăng xuất
 app.get('/', isAuthenticated, async (req, res) => {
   try {
     const response = await axios.get(`${API_BASE_URL}/keywords`, {
@@ -79,7 +74,7 @@ app.get('/', isAuthenticated, async (req, res) => {
     res.render('index', { 
       keywords: response.data.keywords || [], 
       username: req.session.username,
-      keywordId: null  // Quan trọng: thêm biến này để sử dụng trong navigation
+      keywordId: null
     });
   } catch (error) {
     console.error('Error fetching keywords:', error.response?.data?.error || error.message);
@@ -89,13 +84,12 @@ app.get('/', isAuthenticated, async (req, res) => {
     res.render('index', { 
       keywords: [], 
       username: req.session.username, 
-      keywordId: null,  // Quan trọng: thêm biến này để sử dụng trong navigation
+      keywordId: null,
       error: 'Không thể tải danh sách từ khóa' 
     });
   }
 });
 
-// Thêm từ khóa mới
 app.post('/add-keyword', isAuthenticated, async (req, res) => {
   const { keyword } = req.body;
   try {
@@ -109,7 +103,6 @@ app.post('/add-keyword', isAuthenticated, async (req, res) => {
   }
 });
 
-// Xóa từ khóa
 app.post('/delete-keyword', isAuthenticated, async (req, res) => {
   const { keywordId } = req.body;
   try {
@@ -123,18 +116,15 @@ app.post('/delete-keyword', isAuthenticated, async (req, res) => {
   }
 });
 
-// Danh sách bài báo theo từ khóa
 app.get('/articles', isAuthenticated, async (req, res) => {
   const { keywordId } = req.query;
   try {
-    // Lấy danh sách từ khóa
     const keywordsResponse = await axios.get(`${API_BASE_URL}/keywords`, {
       headers: { Authorization: `Bearer ${req.session.token}` }
     });
     const keywords = keywordsResponse.data.keywords || [];
     
     if (!keywordId && keywords.length > 0) {
-      // Nếu không có keywordId, chọn từ khóa đầu tiên
       return res.redirect(`/articles?keywordId=${keywords[0].id}`);
     }
     
@@ -148,7 +138,6 @@ app.get('/articles', isAuthenticated, async (req, res) => {
       });
     }
     
-    // Lấy danh sách bài báo cho từ khóa
     const articlesResponse = await axios.get(`${API_BASE_URL}/articles`, {
       params: { keyword_id: keywordId },
       headers: { Authorization: `Bearer ${req.session.token}` }
@@ -178,7 +167,6 @@ app.get('/articles', isAuthenticated, async (req, res) => {
   }
 });
 
-// Bắt đầu crawl
 app.post('/start-crawl', isAuthenticated, async (req, res) => {
   const { keywordId } = req.body;
   try {
@@ -196,11 +184,9 @@ app.listen(PORT, () => {
   console.log(`Client server running on http://localhost:${PORT}`);
 });
 
-// Trang xem danh sách bài tổng hợp theo từ khóa
 app.get('/summaries', isAuthenticated, async (req, res) => {
   const { keywordId } = req.query;
   try {
-    // Lấy thông tin từ khóa
     const keywordResponse = await axios.get(`${API_BASE_URL}/keywords`, {
       headers: { Authorization: `Bearer ${req.session.token}` }
     });
@@ -211,12 +197,11 @@ app.get('/summaries', isAuthenticated, async (req, res) => {
         summaries: [], 
         keywords, 
         selectedKeyword: null, 
-        keywordId: null,  // Thêm biến này để sử dụng trong navigation
+        keywordId: null,  
         username: req.session.username
       });
     }
     
-    // Lấy danh sách bài tổng hợp
     const summariesResponse = await axios.get(`${API_BASE_URL}/summaries`, {
       params: { keyword_id: keywordId },
       headers: { Authorization: `Bearer ${req.session.token}` }
@@ -229,7 +214,7 @@ app.get('/summaries', isAuthenticated, async (req, res) => {
       summaries, 
       keywords, 
       selectedKeyword,
-      keywordId,  // Thêm biến này để sử dụng trong navigation
+      keywordId, 
       username: req.session.username
     });
     
@@ -242,14 +227,13 @@ app.get('/summaries', isAuthenticated, async (req, res) => {
       summaries: [], 
       keywords: [], 
       selectedKeyword: null,
-      keywordId: keywordId || null,  // Thêm biến này để sử dụng trong navigation
+      keywordId: keywordId || null,  
       username: req.session.username,
       error: 'Không thể tải danh sách bài tổng hợp' 
     });
   }
 });
 
-// Trang xem chi tiết bài tổng hợp
 app.get('/summaries/:summaryId', isAuthenticated, async (req, res) => {
   const { summaryId } = req.params;
   try {
@@ -261,7 +245,7 @@ app.get('/summaries/:summaryId', isAuthenticated, async (req, res) => {
     
     res.render('summaries-detail', { 
       summary, 
-      keywordId: summary.keyword_id,  // Thêm biến này để sử dụng trong navigation
+      keywordId: summary.keyword_id,  
       username: req.session.username
     });
     
@@ -272,14 +256,13 @@ app.get('/summaries/:summaryId', isAuthenticated, async (req, res) => {
     }
     res.render('summaries-detail', { 
       summary: null, 
-      keywordId: null,  // Thêm biến này để sử dụng trong navigation
+      keywordId: null,  
       username: req.session.username,
       error: 'Không thể tải chi tiết bài tổng hợp' 
     });
   }
 });
 
-// Tạo lại bài tổng hợp
 app.post('/regenerate-summary', isAuthenticated, async (req, res) => {
   const { keywordId, date } = req.body;
   try {
