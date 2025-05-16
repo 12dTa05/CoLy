@@ -76,7 +76,7 @@ class BartphoSummarizer:
         
         try:
             # Kết hợp tóm tắt các bài báo
-            combined_summaries = "\n\n".join(article_summaries[:5])  # Tối đa 5 bài
+            combined_summaries = "\n\n".join(article_summaries)
             
             # Tạo prompt yêu cầu tiêu đề
             prompt = f"Các bài báo sau đây nói về chủ đề '{keyword}':\n\n{combined_summaries}\n\nTạo một tiêu đề ngắn gọn, thu hút cho bài tổng hợp tin tức này:"
