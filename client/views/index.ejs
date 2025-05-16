@@ -32,14 +32,14 @@
     <div class="bg-white p-6 rounded-lg shadow-md">
       <h2 class="text-xl font-semibold mb-4">Danh sách từ khóa</h2>
       <% if (keywords.length === 0) { %>
-        <p class="text-gray-500">Bạn chưa có từ khóa nào. Hãy thêm từ khóa để bắt đầu thu thập tin tức!</p>
+        <p class="text-gray-500">Hãy thêm từ khóa để bắt đầu thu thập tin tức!</p>
       <% } else { %>
         <div class="overflow-x-auto">
           <table class="min-w-full bg-white">
             <thead>
               <tr class="bg-gray-200 text-gray-700">
                 <th class="py-2 px-4 text-left">Từ khóa</th>
-                <th class="py-2 px-4 text-center">Số bài viết</th>
+                <!-- <th class="py-2 px-4 text-center">Số bài viết</th> -->
                 <th class="py-2 px-4 text-center">Cập nhật lần cuối</th>
                 <th class="py-2 px-4 text-center">Thao tác</th>
               </tr>
@@ -52,9 +52,9 @@
                       <%= keyword.keyword %>
                     </a>
                   </td>
-                  <td class="py-3 px-4 text-center">
+                  <!-- <td class="py-3 px-4 text-center">
                     <%= keyword.article_count || 0 %>
-                  </td>
+                  </td> -->
                   <td class="py-3 px-4 text-center">
                     <% if (keyword.last_crawled_at) { %>
                       <%= new Date(keyword.last_crawled_at).toLocaleString('vi-VN') %>
@@ -64,8 +64,8 @@
                   </td>
                   <td class="py-3 px-4 text-center">
                     <div class="flex items-center justify-center space-x-2">
-                      <a href="/articles?keywordId=<%= keyword.id %>" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 text-sm">
-                        Xem bài viết
+                      <a href="/summaries?keywordId=<%= keyword.id %>" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 text-sm">
+                        Xem tổng hợp
                       </a>
                       <form action="/delete-keyword" method="POST" onsubmit="return confirm('Bạn có chắc muốn xóa từ khóa này?')">
                         <input type="hidden" name="keywordId" value="<%= keyword.id %>">

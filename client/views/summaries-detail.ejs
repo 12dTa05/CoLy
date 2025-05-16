@@ -72,7 +72,7 @@
 
     <% if (summary) { %>
       <div class="mb-6 flex justify-between items-center">
-        <h1 class="text-3xl font-bold">Bài tổng hợp ngày <%= new Date(summary.date).toLocaleDateString('vi-VN') %></h1>
+        <h1 class="text-3xl font-bold">Ngày <%= new Date(summary.date).toLocaleDateString('vi-VN') %></h1>
         <div class="space-x-4">
           <a href="/summaries?keywordId=<%= summary.keyword_id %>" class="text-blue-500 hover:underline">
             ← Quay lại danh sách
@@ -81,7 +81,7 @@
       </div>
 
       <!-- Summary Meta Info -->
-      <div class="bg-white p-4 rounded shadow-md mb-6">
+      <!-- <div class="bg-white p-4 rounded shadow-md mb-6">
         <div class="flex flex-wrap gap-4">
           <div class="flex items-center">
             <span class="font-medium mr-2">Từ khóa:</span>
@@ -100,24 +100,7 @@
             <span><%= new Date(summary.created_at).toLocaleString('vi-VN') %></span>
           </div>
         </div>
-      </div>
-
-      <!-- Print and Share Buttons -->
-      <div class="bg-white p-4 rounded shadow-md mb-6 flex justify-end space-x-3">
-        <button onclick="window.print()" class="bg-gray-500 text-white px-3 py-1 rounded hover:bg-gray-600 flex items-center">
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M5 4v3H4a2 2 0 00-2 2v3a2 2 0 002 2h1v2a2 2 0 002 2h6a2 2 0 002-2v-2h1a2 2 0 002-2V9a2 2 0 00-2-2h-1V4a2 2 0 00-2-2H7a2 2 0 00-2 2zm8 0H7v3h6V4zm0 8H7v4h6v-4z" clip-rule="evenodd" />
-          </svg>
-          In bài viết
-        </button>
-        <button onclick="copyToClipboard()" class="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 flex items-center">
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor">
-            <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-            <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
-          </svg>
-          Sao chép link
-        </button>
-      </div>
+      </div> -->
 
       <!-- Summary Content -->
       <div class="bg-white p-6 rounded shadow-md mb-6">

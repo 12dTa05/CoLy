@@ -28,16 +28,7 @@ from joblib import Parallel, delayed
 from newspaper import Article
 import tldextract
 
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.lsa import LsaSummarizer
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.cluster import KMeans
-from underthesea import sent_tokenize as vi_sent_tokenize
-from pyvi import ViTokenizer
-import numpy as np
-
+from BartPho import BartphoSummarizer, GeminiPolisher
 
 from utils.vnexpress import crawl_vnexpress_article
 from utils.dantri import crawl_dantri_article
@@ -84,8 +75,6 @@ bcrypt = Bcrypt(app)
 app.config['JWT_SECRET_KEY'] = 'your-secret-key-change-in-production'
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
 jwt = JWTManager(app)
-
-
 
 def connect_to_mongodb():
     try:
@@ -554,305 +543,6 @@ def auto_crawl_all_keywords():
 
             time.sleep(90)
 
-def vietnamese_tokenize(text):
-    """
-    Tách câu tiếng Việt đơn giản dựa trên dấu câu và các quy tắc riêng
-    """
-    if not text:
-        return []
-        
-    # Tiền xử lý - giữ nguyên dấu chấm trong số thập phân và viết tắt
-    text = re.sub(r'(\d+)\.(\d+)', r'\1<dot>\2', text)
-    text = re.sub(r'([A-Za-z])\.([A-Za-z])', r'\1<dot>\2', text)
-    
-    # Tách câu dựa trên các dấu câu kết thúc
-    text = re.sub(r'([.!?;])\s+', r'\1\n', text)
-    text = re.sub(r'([.!?;])\"', r'\1\"\n', text)
-    text = re.sub(r'\.\.\.\s*', '...\n', text)
-    
-    # Xử lý một số trường hợp đặc biệt trong tiếng Việt
-    text = re.sub(r'\n-\s+', '\n', text)  # Loại bỏ dấu gạch đầu dòng sau khi tách câu
-    
-    # Khôi phục dấu chấm trong số thập phân và viết tắt
-    text = text.replace('<dot>', '.')
-    
-    # Tách các câu và loại bỏ khoảng trắng thừa
-    sentences = [s.strip() for s in text.split('\n') if s.strip()]
-    
-    return sentences
-
-def lsa_summarize_with_references(keyword, all_articles):
-    """Tổng hợp bài báo sử dụng LSA với tham chiếu chính xác đến nguồn"""
-    # Bước 1: Chuẩn bị dữ liệu
-    article_summaries = []
-    article_sentences = []
-    source_mapping = {}
-    article_sources = set()
-    article_ids = []
-    
-    # Chia tóm tắt thành câu để so sánh chính xác hơn
-    for i, article in enumerate(all_articles):
-        article_ids.append(article['_id'])
-        article_sources.add(article['source'])
-        
-        if article.get('summary'):
-            tokenized_summary = ViTokenizer.tokenize(article.get('summary', ''))
-            article_summaries.append(tokenized_summary)
-            
-            # Chia tóm tắt thành các câu riêng lẻ
-            try:
-                sentences = vietnamese_tokenize(article.get('summary', ''))
-                tokenized_sentences = [ViTokenizer.tokenize(s) for s in sentences]
-                article_sentences.append((i, tokenized_sentences))
-            except:
-                # Fallback nếu không tách được câu
-                article_sentences.append((i, [tokenized_summary]))
-        
-        # Lưu source mapping
-        source_mapping[str(i+1)] = {
-            'url': article['real_link'],
-            'title': article['title'],
-            'source': article['source']
-        }
-    
-    if not article_summaries:
-        return f"# Tổng hợp tin tức về {keyword}\n\nKhông có đủ bài báo để tổng hợp.", article_ids, list(article_sources), source_mapping
-    
-    # Bước 2: Tối ưu đầu vào - Lọc câu quan trọng từ mỗi tóm tắt
-    filtered_content = []
-    all_sentences = []
-    
-    # Tạo vectorizer cho TF-IDF
-    vectorizer = TfidfVectorizer(min_df=1, max_df=0.9)
-    
-    # Xử lý song song các tóm tắt
-    def process_summary(idx_sentences):
-        idx, sentences = idx_sentences
-        if not sentences:
-            return []
-        
-        # Vectorize các câu
-        try:
-            sentence_matrix = vectorizer.fit_transform(sentences)
-            # Tính điểm quan trọng cho mỗi câu (dựa trên tổng TF-IDF)
-            importance_scores = sentence_matrix.sum(axis=1).A1
-            # Lấy các câu quan trọng nhất (tối đa 7 câu)
-            max_sentences = min(6, len(sentences))
-            top_indices = importance_scores.argsort()[-max_sentences:][::-1]
-            return [(idx, i, sentences[i]) for i in top_indices]
-        except:
-            # Fallback nếu không vectorize được
-            return [(idx, i, s) for i, s in enumerate(sentences)]
-    
-    # Xử lý mỗi tóm tắt để lấy câu quan trọng
-    for idx_sentences in article_sentences:
-        important_sentences = process_summary(idx_sentences)
-        for article_idx, sentence_idx, sentence in important_sentences:
-            filtered_content.append(sentence)
-            all_sentences.append((article_idx, sentence_idx, sentence))
-    
-    # Kết hợp các câu quan trọng
-    combined_content = " ".join(filtered_content)
-    
-    # Bước 3: Áp dụng LSA để trích xuất câu quan trọng
-    parser = PlaintextParser.from_string(combined_content, Tokenizer("vietnamese"))
-    summarizer = LsaSummarizer()
-    
-    # Số câu tùy thuộc vào số lượng bài
-    sentence_count = min(max(len(all_articles) * 2, 10), 30)
-    lsa_sentences = summarizer(parser.document, sentence_count)
-    
-    # Bước 4: Tìm tham chiếu chính xác cho từng câu sử dụng cosine similarity
-    sentences_with_refs = []
-    
-    # Tạo ma trận TF-IDF cho tất cả các câu
-    all_sentence_texts = [s for _, _, s in all_sentences]
-    if all_sentence_texts:
-        # Vectorize tất cả các câu
-        vectorizer = TfidfVectorizer()
-        all_vectors = vectorizer.fit_transform(all_sentence_texts)
-        
-        # Hàm tìm tham chiếu cho một câu
-        def find_references_for_sentence(sentence):
-            sentence_str = str(sentence)
-            # Loại bỏ tham chiếu nếu có
-            clean_sentence = re.sub(r'\[\d+\]', '', sentence_str).strip()
-            
-            # Tokenize câu
-            tokenized_sentence = ViTokenizer.tokenize(clean_sentence)
-            
-            # Chuyển câu thành vector TF-IDF
-            try:
-                sentence_vector = vectorizer.transform([tokenized_sentence])
-                
-                # Tính cosine similarity với tất cả câu
-                similarities = cosine_similarity(sentence_vector, all_vectors).flatten()
-                
-                # Xác định ngưỡng động - sử dụng phân vị thứ 90
-                dynamic_threshold = max(0.2, np.percentile(similarities, 90))
-                
-                # Lọc các câu có điểm tương đồng cao
-                similar_indices = [i for i, score in enumerate(similarities) if score > dynamic_threshold]
-                
-                # Sắp xếp theo điểm tương đồng giảm dần
-                similar_indices.sort(key=lambda i: similarities[i], reverse=True)
-                
-                # Lấy tối đa 3 tham chiếu
-                max_refs = min(3, len(similar_indices))
-                
-                if similar_indices and max_refs > 0:
-                    # Lấy article_idx từ các câu tương đồng
-                    article_refs = set()
-                    for i in range(max_refs):
-                        if i < len(similar_indices):
-                            article_idx = all_sentences[similar_indices[i]][0]
-                            article_refs.add(str(article_idx + 1))  # +1 vì tham chiếu bắt đầu từ 1
-                    
-                    if article_refs:
-                        refs_str = ", ".join(sorted(article_refs))
-                        return f"{clean_sentence} [{refs_str}]"
-                
-                return clean_sentence
-            except:
-                return clean_sentence
-        
-        # Xử lý song song tất cả các câu
-        sentences_with_refs = [find_references_for_sentence(sentence) for sentence in lsa_sentences]
-    else:
-        sentences_with_refs = [str(sentence) for sentence in lsa_sentences]
-    
-    # Bước 5: Phân cụm câu để cải thiện tính mạch lạc
-    if len(sentences_with_refs) >= 8:
-        # Tokenize các câu (loại bỏ tham chiếu)
-        clean_sentences = [re.sub(r'\[\d+,\s*\d+\]|\[\d+\]', '', s).strip() for s in sentences_with_refs]
-        tokenized_sentences = [ViTokenizer.tokenize(s) for s in clean_sentences]
-        
-        try:
-            # Tạo ma trận TF-IDF cho các câu
-            sentence_vectorizer = TfidfVectorizer()
-            sentence_tfidf = sentence_vectorizer.fit_transform(tokenized_sentences)
-            
-            # Xác định số lượng cụm
-            n_clusters = min(3, len(sentences_with_refs) // 3 + 1)
-            
-            # Sử dụng K-means để phân cụm
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-            clusters = kmeans.fit_predict(sentence_tfidf)
-            
-            # Tổ chức lại câu theo cụm
-            organized_sentences = []
-            for cluster_id in range(n_clusters):
-                cluster_indices = [i for i, c in enumerate(clusters) if c == cluster_id]
-                organized_sentences.extend([sentences_with_refs[i] for i in cluster_indices])
-        except:
-            # Fallback nếu không phân cụm được
-            organized_sentences = sentences_with_refs
-    else:
-        # Không đủ câu để phân cụm
-        organized_sentences = sentences_with_refs
-    
-    # Bước 6: Tạo tiêu đề thông minh kết hợp TF-IDF và Gemini
-    title = generate_title(keyword, article_summaries, vectorizer)
-    
-    # Bước 7: Tạo cấu trúc bài viết với các phần hợp lý
-    current_date = datetime.now().strftime("%d/%m/%Y")
-    
-    # Chia câu thành các phần thích hợp
-    total_sentences = len(organized_sentences)
-    intro_count = max(2, int(total_sentences * 0.2))
-    conclusion_count = max(1, int(total_sentences * 0.15))
-    main_count = total_sentences - intro_count - conclusion_count
-    
-    intro_text = " ".join(organized_sentences[:intro_count])
-    main_text = " ".join(organized_sentences[intro_count:intro_count + main_count])
-    conclusion_text = " ".join(organized_sentences[intro_count + main_count:])
-    
-    raw_content = f"""{title}
-                    ## Tóm tắt chính
-                    {intro_text}
-                    ## Thông tin chi tiết
-                    {main_text}
-                    ## Kết luận
-                    {conclusion_text}
-                    """
-    
-    # Bước 8: Sử dụng Gemini để làm đẹp văn bản mà giữ nguyên tham chiếu
-    polished_content = polish_content_with_gemini(raw_content, keyword)
-    
-    return polished_content or raw_content, article_ids, list(article_sources), source_mapping
-
-def generate_title(keyword, article_summaries, vectorizer):
-    """Tạo tiêu đề thông minh kết hợp TF-IDF và Gemini"""
-    if not article_summaries:
-        return f"Tổng hợp tin tức về {keyword}"
-    
-    try:
-        # Sử dụng TF-IDF để tìm từ khóa quan trọng
-        tfidf_matrix = vectorizer.fit_transform(article_summaries)
-        feature_names = vectorizer.get_feature_names_out()
-        tfidf_sums = tfidf_matrix.sum(axis=0).A1
-        
-        # Lấy top 5 từ khóa quan trọng
-        top_indices = tfidf_sums.argsort()[-5:][::-1]
-        topic_words = [feature_names[i].replace("_", " ") for i in top_indices]
-        
-        # Sử dụng Gemini để tạo tiêu đề hấp dẫn
-        prompt = f"Tạo một tiêu đề ngắn gọn, hấp dẫn cho bài báo về chủ đề '{keyword}' với các từ khóa: {', '.join(topic_words)}. Chỉ trả về tiêu đề, không có dấu ngoặc kép hay bất kỳ định dạng nào khác."
-        
-        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_API_KEY")
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content(prompt)
-        title = response.text.strip()
-        
-        # Làm sạch tiêu đề (loại bỏ dấu ngoặc kép nếu có)
-        title = title.strip('"\'')
-        
-        return title
-    except Exception as e:
-        print(f"Lỗi khi tạo tiêu đề: {e}")
-        # Fallback: tạo tiêu đề từ từ khóa quan trọng
-        try:
-            return f"{keyword.capitalize()}: {', '.join(topic_words[:3])}"
-        except:
-            return f"Tổng hợp tin tức về {keyword}"
-
-def polish_content_with_gemini(raw_content, keyword):
-    """Sử dụng Gemini để cải thiện chất lượng văn bản và giữ nguyên tham chiếu"""
-    try:
-        # Trích xuất tất cả tham chiếu trong văn bản
-        references = re.findall(r'\[([0-9, ]+)\]', raw_content)
-        
-        # Tạo prompt yêu cầu cụ thể
-        prompt = f"""Hãy làm cho bài viết sau mạch lạc và chuyên nghiệp hơn như một bài báo, giữ nguyên nội dung nhưng làm cho văn phong trôi chảy, dễ đọc và có tính liên kết cao hơn. Chủ đề: "{keyword}".
-                    QUY TẮC TUYỆT ĐỐI PHẢI TUÂN THỦ:
-                    1. PHẢI giữ nguyên tất cả các tham chiếu dạng [1], [2], [1, 2], ... xuất hiện ở cuối câu.
-                    2. KHÔNG xóa, thêm hoặc sửa đổi BẤT KỲ tham chiếu nào.
-                    3. KHÔNG thay đổi cấu trúc 3 đề mục: "Tóm tắt chính", "Thông tin chi tiết", "Kết luận".
-                    4. CHỈ cải thiện cách viết, kết nối ý, làm nội dung mạch lạc hơn mà không thay đổi thông tin.
-                    Đây là nội dung cần cải thiện:
-                    {raw_content}
-                """
-        
-        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_API_KEY")
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content(prompt)
-        polished_content = response.text.strip()
-        
-        # Kiểm tra chặt chẽ tham chiếu
-        new_references = re.findall(r'\[([0-9, ]+)\]', polished_content)
-        
-        # So sánh chi tiết các tham chiếu
-        if sorted([r.replace(' ', '') for r in references]) != sorted([r.replace(' ', '') for r in new_references]):
-            print("Cảnh báo: Tham chiếu không khớp. Sử dụng nội dung gốc.")
-            return raw_content
-            
-        return polished_content
-    except Exception as e:
-        print(f"Lỗi khi làm đẹp nội dung: {e}")
-        return raw_content  # Trả về nội dung gốc nếu có lỗi
-
 def generate_daily_summary(keyword, keyword_id, date, db):
     """Tạo bài tổng hợp hàng ngày cho từ khóa"""
     # Lấy tất cả bài báo của từ khóa trong ngày
@@ -868,8 +558,15 @@ def generate_daily_summary(keyword, keyword_id, date, db):
         print(f"Không đủ bài báo để tổng hợp cho từ khóa '{keyword}' ngày {date.strftime('%Y-%m-%d')}")
         return None
 
-    # Thực hiện tổng hợp sử dụng LSA
-    summary_content, article_ids, article_sources, source_mapping = lsa_summarize_with_references(keyword, articles)
+    # Khởi tạo các đối tượng tóm tắt và làm đẹp
+    summarizer = BartphoSummarizer()
+    polisher = GeminiPolisher()
+    
+    # Tóm tắt với BARTpho
+    summary_with_refs, title, article_ids, article_sources, source_mapping = summarizer.summarize_with_references(keyword, articles)
+    
+    # Làm đẹp với Gemini
+    summary_content = polisher.polish_and_structure(title, summary_with_refs, keyword)
     
     if not summary_content:
         return None
