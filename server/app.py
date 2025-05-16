@@ -6,11 +6,16 @@ from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from bson.objectid import ObjectId
 from bs4 import BeautifulSoup
+
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
 import google.generativeai as genai
 import os
 import time
@@ -18,9 +23,21 @@ import threading
 import schedule
 import re
 from datetime import datetime, timedelta, timezone
+from joblib import Parallel, delayed
 
 from newspaper import Article
 import tldextract
+
+from sumy.parsers.plaintext import PlaintextParser
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.summarizers.lsa import LsaSummarizer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.cluster import KMeans
+from nltk.tokenize import sent_tokenize
+from pyvi import ViTokenizer
+import numpy as np
+
 
 from utils.vnexpress import crawl_vnexpress_article
 from utils.dantri import crawl_dantri_article
@@ -130,7 +147,9 @@ def crawl_google_news(keyword): #crawl RSS
     chrome_options.add_argument(f"--user-data-dir=/tmp/chrome-data-{int(time.time())}")
     chrome_options.add_argument("--dns-prefetch-disable")
     chrome_options.add_argument("--host-resolver-rules='MAP * 8.8.8.8, EXCLUDE localhost'")
-    driver = webdriver.Chrome(options=chrome_options)
+    service = Service(ChromeDriverManager().install())
+        
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     
     try:
         driver.get(url)
@@ -535,157 +554,280 @@ def auto_crawl_all_keywords():
 
             time.sleep(90)
 
-# Hàm tổng hợp cho một nhóm bài báo
-def summarize_group(keyword, group_articles, level=1):
-    article_data = []
-    for i, article in enumerate(group_articles):
-        if level == 1:  # Cấp đầu tiên: lấy từ bài báo gốc
-            article_data.append({
-                'title': article['title'],
-                'url': article['real_link'],
-                'summary': article.get('summary', '')
-            })
-        else:  # Cấp cao hơn: lấy từ bài tổng hợp cấp thấp hơn
-            article_data.append({
-                'title': f"Tổng hợp cấp {level-1}",
-                'content': article
-            })
+def lsa_summarize_with_references(keyword, all_articles):
+    """Tổng hợp bài báo sử dụng LSA với tham chiếu chính xác đến nguồn"""
+    # Bước 1: Chuẩn bị dữ liệu
+    article_summaries = []
+    article_sentences = []
+    source_mapping = {}
+    article_sources = set()
+    article_ids = []
     
-    if level == 1:
-        prompt = f"""
-        Hãy tạo một đoạn tổng hợp về chủ đề "{keyword}" dựa trên các bài báo sau. 
-        Đoạn tổng hợp cần ngắn gọn nhưng vẫn bao quát những thông tin quan trọng.
-        Dữ liệu các bài báo:
-        """
+    # Chia tóm tắt thành câu để so sánh chính xác hơn
+    for i, article in enumerate(all_articles):
+        article_ids.append(article['_id'])
+        article_sources.add(article['source'])
         
-        for i, article in enumerate(article_data):
-            prompt += f"""
-            --- Bài {i+1} ---
-            Tiêu đề: {article['title']}
-            URL: {article['url']}
-            Nội dung: {article['summary']}
-            """
-    else:
-        prompt = f"""
-        Hãy tạo một đoạn tổng hợp về chủ đề "{keyword}" dựa trên các bài báo sau.
-        Đoạn tổng hợp cần ngắn gọn nhưng vẫn bao quát những thông tin quan trọng.
-        Dữ liệu các bài báo:
-        """
+        if article.get('summary'):
+            tokenized_summary = ViTokenizer.tokenize(article.get('summary', ''))
+            article_summaries.append(tokenized_summary)
+            
+            # Chia tóm tắt thành các câu riêng lẻ
+            try:
+                sentences = sent_tokenize(article.get('summary', ''))
+                tokenized_sentences = [ViTokenizer.tokenize(s) for s in sentences]
+                article_sentences.append((i, tokenized_sentences))
+            except:
+                # Fallback nếu không tách được câu
+                article_sentences.append((i, [tokenized_summary]))
         
-        for i, article in enumerate(article_data):
-            prompt += f"""
-            --- Tổng hợp {i+1} ---
-            {article['content']}
-            """
-    
-    try:
-        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE") #AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE , AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU, AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content(prompt)
-        summary = response.text.strip()
-        return summary
-    except Exception as e:
-        print(f"Lỗi khi tổng hợp cấp {level}: {e}")
-        return None   
-
-def hierarchical_summarize(keyword, all_articles):
-    group_size = 3
-    
-    if len(all_articles) <= group_size * 2:
-        return final_summarize(all_articles)
-    
-    # Cấp 1: Chia bài báo thành các nhóm nhỏ và tổng hợp
-    level1_groups = [all_articles[i:i+group_size] for i in range(0, len(all_articles), group_size)]
-    level1_summaries = []
-    
-    for group in level1_groups:
-        summary = summarize_group(keyword, group, level=1)
-        if summary:
-            level1_summaries.append(summary)
-    
-    # Nếu chỉ còn 1 bài tổng hợp, trả về kết quả
-    if len(level1_summaries) == 1:
-        return level1_summaries[0]
-    
-    # Tiếp tục tổng hợp cấp cao hơn cho đến khi chỉ còn 1 bài
-    current_level = 2
-    current_summaries = level1_summaries
-    
-    while len(current_summaries) > 1:
-        next_level_groups = [current_summaries[i:i+group_size] for i in range(0, len(current_summaries), group_size)]
-        next_level_summaries = []
-        
-        for group in next_level_groups:
-            summary = summarize_group(keyword, group, level=current_level)
-            if summary:
-                next_level_summaries.append(summary)
-        
-        current_summaries = next_level_summaries
-        current_level += 1
-        
-        if len(current_summaries) == 1:
-            break
-    
-    return current_summaries[0]
-
-def final_summarize(keyword, articles_for_final):
-    article_data = []
-    article_ids = [article['_id'] for article in articles_for_final]
-    article_sources = list(set(article['source'] for article in articles_for_final))
-    
-    for i, article in enumerate(articles_for_final):
-        article_data.append({
-            'title': article['title'],
+        # Lưu source mapping
+        source_mapping[str(i+1)] = {
             'url': article['real_link'],
-            'summary': article.get('summary', '')
-        })
+            'title': article['title'],
+            'source': article['source']
+        }
     
-    # Prompt cho tổng hợp cuối cùng
-    prompt = f"""
-    Hãy tạo một bài báo tổng hợp về chủ đề "{keyword}" dựa trên các bài báo sau. Bài viết cần có đoạn mở đầu tổng quan về chủ đề, sau đó phân tích và tổng hợp thông tin từ các nguồn, và kết luận với nhận định tổng thể.
-    Yêu cầu quan trọng:
-    Yêu cầu quan trọng:
-    1. Viết như một bài báo chính thức, với văn phong mạch lạc, chuyên nghiệp, báo chí
-    2. Cấu trúc bài viết rõ ràng với các đề mục phù hợp
-    3. Mỗi khi đưa ra thông tin cụ thể từ một bài báo, PHẢI đặt tham chiếu đến bài báo đó bằng số trong ngoặc vuông, ví dụ: [1], [2], ... tương ứng với số thứ tự bài báo dưới đây
-    4. KHÔNG sử dụng cú pháp [tên nguồn](URL) mà chỉ dùng [số]
-    5. Không sao chép nguyên văn, hãy diễn đạt lại bằng từ ngữ sáng tạo
-    6. Độ dài tùy ý, đảm bảo bao quát đầy đủ thông tin quan trọng
-    7. Đặt tựa đề phù hợp cho bài viết
-    Dữ liệu các bài báo gồm {len(article_data)} bài:
-    """
+    if not article_summaries:
+        return f"# Tổng hợp tin tức về {keyword}\n\nKhông có đủ bài báo để tổng hợp.", article_ids, list(article_sources), source_mapping
     
-    for i, article in enumerate(article_data):
-        prompt += f"""
-        --- Bài {i+1} ---
-        Tiêu đề: {article['title']}
-        URL: {article['url']}
-        Nội dung: {article['summary']}
-        """
+    # Bước 2: Tối ưu đầu vào - Lọc câu quan trọng từ mỗi tóm tắt
+    filtered_content = []
+    all_sentences = []
+    
+    # Tạo vectorizer cho TF-IDF
+    vectorizer = TfidfVectorizer(min_df=1, max_df=0.9)
+    
+    # Xử lý song song các tóm tắt
+    def process_summary(idx_sentences):
+        idx, sentences = idx_sentences
+        if not sentences:
+            return []
+        
+        # Vectorize các câu
+        try:
+            sentence_matrix = vectorizer.fit_transform(sentences)
+            # Tính điểm quan trọng cho mỗi câu (dựa trên tổng TF-IDF)
+            importance_scores = sentence_matrix.sum(axis=1).A1
+            # Lấy các câu quan trọng nhất (tối đa 7 câu)
+            max_sentences = min(6, len(sentences))
+            top_indices = importance_scores.argsort()[-max_sentences:][::-1]
+            return [(idx, i, sentences[i]) for i in top_indices]
+        except:
+            # Fallback nếu không vectorize được
+            return [(idx, i, s) for i, s in enumerate(sentences)]
+    
+    # Xử lý mỗi tóm tắt để lấy câu quan trọng
+    for idx_sentences in article_sentences:
+        important_sentences = process_summary(idx_sentences)
+        for article_idx, sentence_idx, sentence in important_sentences:
+            filtered_content.append(sentence)
+            all_sentences.append((article_idx, sentence_idx, sentence))
+    
+    # Kết hợp các câu quan trọng
+    combined_content = " ".join(filtered_content)
+    
+    # Bước 3: Áp dụng LSA để trích xuất câu quan trọng
+    parser = PlaintextParser.from_string(combined_content, Tokenizer("vietnamese"))
+    summarizer = LsaSummarizer()
+    
+    # Số câu tùy thuộc vào số lượng bài
+    sentence_count = min(max(len(all_articles) * 2, 10), 30)
+    lsa_sentences = summarizer(parser.document, sentence_count)
+    
+    # Bước 4: Tìm tham chiếu chính xác cho từng câu sử dụng cosine similarity
+    sentences_with_refs = []
+    
+    # Tạo ma trận TF-IDF cho tất cả các câu
+    all_sentence_texts = [s for _, _, s in all_sentences]
+    if all_sentence_texts:
+        # Vectorize tất cả các câu
+        vectorizer = TfidfVectorizer()
+        all_vectors = vectorizer.fit_transform(all_sentence_texts)
+        
+        # Hàm tìm tham chiếu cho một câu
+        def find_references_for_sentence(sentence):
+            sentence_str = str(sentence)
+            # Loại bỏ tham chiếu nếu có
+            clean_sentence = re.sub(r'\[\d+\]', '', sentence_str).strip()
+            
+            # Tokenize câu
+            tokenized_sentence = ViTokenizer.tokenize(clean_sentence)
+            
+            # Chuyển câu thành vector TF-IDF
+            try:
+                sentence_vector = vectorizer.transform([tokenized_sentence])
+                
+                # Tính cosine similarity với tất cả câu
+                similarities = cosine_similarity(sentence_vector, all_vectors).flatten()
+                
+                # Xác định ngưỡng động - sử dụng phân vị thứ 90
+                dynamic_threshold = max(0.2, np.percentile(similarities, 90))
+                
+                # Lọc các câu có điểm tương đồng cao
+                similar_indices = [i for i, score in enumerate(similarities) if score > dynamic_threshold]
+                
+                # Sắp xếp theo điểm tương đồng giảm dần
+                similar_indices.sort(key=lambda i: similarities[i], reverse=True)
+                
+                # Lấy tối đa 3 tham chiếu
+                max_refs = min(3, len(similar_indices))
+                
+                if similar_indices and max_refs > 0:
+                    # Lấy article_idx từ các câu tương đồng
+                    article_refs = set()
+                    for i in range(max_refs):
+                        if i < len(similar_indices):
+                            article_idx = all_sentences[similar_indices[i]][0]
+                            article_refs.add(str(article_idx + 1))  # +1 vì tham chiếu bắt đầu từ 1
+                    
+                    if article_refs:
+                        refs_str = ", ".join(sorted(article_refs))
+                        return f"{clean_sentence} [{refs_str}]"
+                
+                return clean_sentence
+            except:
+                return clean_sentence
+        
+        # Xử lý song song tất cả các câu
+        sentences_with_refs = [find_references_for_sentence(sentence) for sentence in lsa_sentences]
+    else:
+        sentences_with_refs = [str(sentence) for sentence in lsa_sentences]
+    
+    # Bước 5: Phân cụm câu để cải thiện tính mạch lạc
+    if len(sentences_with_refs) >= 8:
+        # Tokenize các câu (loại bỏ tham chiếu)
+        clean_sentences = [re.sub(r'\[\d+,\s*\d+\]|\[\d+\]', '', s).strip() for s in sentences_with_refs]
+        tokenized_sentences = [ViTokenizer.tokenize(s) for s in clean_sentences]
+        
+        try:
+            # Tạo ma trận TF-IDF cho các câu
+            sentence_vectorizer = TfidfVectorizer()
+            sentence_tfidf = sentence_vectorizer.fit_transform(tokenized_sentences)
+            
+            # Xác định số lượng cụm
+            n_clusters = min(3, len(sentences_with_refs) // 3 + 1)
+            
+            # Sử dụng K-means để phân cụm
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+            clusters = kmeans.fit_predict(sentence_tfidf)
+            
+            # Tổ chức lại câu theo cụm
+            organized_sentences = []
+            for cluster_id in range(n_clusters):
+                cluster_indices = [i for i, c in enumerate(clusters) if c == cluster_id]
+                organized_sentences.extend([sentences_with_refs[i] for i in cluster_indices])
+        except:
+            # Fallback nếu không phân cụm được
+            organized_sentences = sentences_with_refs
+    else:
+        # Không đủ câu để phân cụm
+        organized_sentences = sentences_with_refs
+    
+    # Bước 6: Tạo tiêu đề thông minh kết hợp TF-IDF và Gemini
+    title = generate_title(keyword, article_summaries, vectorizer)
+    
+    # Bước 7: Tạo cấu trúc bài viết với các phần hợp lý
+    current_date = datetime.now().strftime("%d/%m/%Y")
+    
+    # Chia câu thành các phần thích hợp
+    total_sentences = len(organized_sentences)
+    intro_count = max(2, int(total_sentences * 0.2))
+    conclusion_count = max(1, int(total_sentences * 0.15))
+    main_count = total_sentences - intro_count - conclusion_count
+    
+    intro_text = " ".join(organized_sentences[:intro_count])
+    main_text = " ".join(organized_sentences[intro_count:intro_count + main_count])
+    conclusion_text = " ".join(organized_sentences[intro_count + main_count:])
+    
+    raw_content = f"""{title}
+                    ## Tóm tắt chính
+                    {intro_text}
+                    ## Thông tin chi tiết
+                    {main_text}
+                    ## Kết luận
+                    {conclusion_text}
+                    """
+    
+    # Bước 8: Sử dụng Gemini để làm đẹp văn bản mà giữ nguyên tham chiếu
+    polished_content = polish_content_with_gemini(raw_content, keyword)
+    
+    return polished_content or raw_content, article_ids, list(article_sources), source_mapping
+
+def generate_title(keyword, article_summaries, vectorizer):
+    """Tạo tiêu đề thông minh kết hợp TF-IDF và Gemini"""
+    if not article_summaries:
+        return f"Tổng hợp tin tức về {keyword}"
     
     try:
-        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU") #AIzaSyBuvd60gK2qW7znvFW-8I6A7ReE1Sc1TOE , AIzaSyDKEnG-QYRkJzYpZd5ibmVswhAjtsnFOkU, AIzaSyBjb1Ez_KrFfXrWsCrlvyk3SPB9ZqKhyBI
+        # Sử dụng TF-IDF để tìm từ khóa quan trọng
+        tfidf_matrix = vectorizer.fit_transform(article_summaries)
+        feature_names = vectorizer.get_feature_names_out()
+        tfidf_sums = tfidf_matrix.sum(axis=0).A1
+        
+        # Lấy top 5 từ khóa quan trọng
+        top_indices = tfidf_sums.argsort()[-5:][::-1]
+        topic_words = [feature_names[i].replace("_", " ") for i in top_indices]
+        
+        # Sử dụng Gemini để tạo tiêu đề hấp dẫn
+        prompt = f"Tạo một tiêu đề ngắn gọn, hấp dẫn cho bài báo về chủ đề '{keyword}' với các từ khóa: {', '.join(topic_words)}. Chỉ trả về tiêu đề, không có dấu ngoặc kép hay bất kỳ định dạng nào khác."
+        
+        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_API_KEY")
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-2.0-flash')
         response = model.generate_content(prompt)
-        summary_content = response.text.strip()
+        title = response.text.strip()
         
-        # Lưu thông tin về nguồn
-        source_mapping = {}
-        for i, article in enumerate(articles_for_final):
-            source_mapping[str(i+1)] = {
-                'url': article['real_link'],
-                'title': article['title'],
-                'source': article['source']
-            }
+        # Làm sạch tiêu đề (loại bỏ dấu ngoặc kép nếu có)
+        title = title.strip('"\'')
         
-        return summary_content, article_ids, article_sources, source_mapping
+        return title
     except Exception as e:
-        print(f"Lỗi khi tạo bài tổng hợp cuối: {e}")
-        return None, None, None, None
+        print(f"Lỗi khi tạo tiêu đề: {e}")
+        # Fallback: tạo tiêu đề từ từ khóa quan trọng
+        try:
+            return f"{keyword.capitalize()}: {', '.join(topic_words[:3])}"
+        except:
+            return f"Tổng hợp tin tức về {keyword}"
+
+def polish_content_with_gemini(raw_content, keyword):
+    """Sử dụng Gemini để cải thiện chất lượng văn bản và giữ nguyên tham chiếu"""
+    try:
+        # Trích xuất tất cả tham chiếu trong văn bản
+        references = re.findall(r'\[([0-9, ]+)\]', raw_content)
+        
+        # Tạo prompt yêu cầu cụ thể
+        prompt = f"""Hãy làm cho bài viết sau mạch lạc và chuyên nghiệp hơn như một bài báo, giữ nguyên nội dung nhưng làm cho văn phong trôi chảy, dễ đọc và có tính liên kết cao hơn. Chủ đề: "{keyword}".
+                    QUY TẮC TUYỆT ĐỐI PHẢI TUÂN THỦ:
+                    1. PHẢI giữ nguyên tất cả các tham chiếu dạng [1], [2], [1, 2], ... xuất hiện ở cuối câu.
+                    2. KHÔNG xóa, thêm hoặc sửa đổi BẤT KỲ tham chiếu nào.
+                    3. KHÔNG thay đổi cấu trúc 3 đề mục: "Tóm tắt chính", "Thông tin chi tiết", "Kết luận".
+                    4. CHỈ cải thiện cách viết, kết nối ý, làm nội dung mạch lạc hơn mà không thay đổi thông tin.
+                    Đây là nội dung cần cải thiện:
+                    {raw_content}
+                """
+        
+        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_API_KEY")
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content(prompt)
+        polished_content = response.text.strip()
+        
+        # Kiểm tra chặt chẽ tham chiếu
+        new_references = re.findall(r'\[([0-9, ]+)\]', polished_content)
+        
+        # So sánh chi tiết các tham chiếu
+        if sorted([r.replace(' ', '') for r in references]) != sorted([r.replace(' ', '') for r in new_references]):
+            print("Cảnh báo: Tham chiếu không khớp. Sử dụng nội dung gốc.")
+            return raw_content
+            
+        return polished_content
+    except Exception as e:
+        print(f"Lỗi khi làm đẹp nội dung: {e}")
+        return raw_content  # Trả về nội dung gốc nếu có lỗi
 
 def generate_daily_summary(keyword, keyword_id, date, db):
+    """Tạo bài tổng hợp hàng ngày cho từ khóa"""
     # Lấy tất cả bài báo của từ khóa trong ngày
     start_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
     end_date = date.replace(hour=23, minute=59, second=59, microsecond=999999)
@@ -699,11 +841,8 @@ def generate_daily_summary(keyword, keyword_id, date, db):
         print(f"Không đủ bài báo để tổng hợp cho từ khóa '{keyword}' ngày {date.strftime('%Y-%m-%d')}")
         return None
 
-    # Thực hiện tổng hợp đa cấp
-    interim_summary = hierarchical_summarize(keyword, articles)
-    
-    # Tạo bài tổng hợp cuối cùng
-    summary_content, article_ids, article_sources, source_mapping = final_summarize(keyword, articles)
+    # Thực hiện tổng hợp sử dụng LSA
+    summary_content, article_ids, article_sources, source_mapping = lsa_summarize_with_references(keyword, articles)
     
     if not summary_content:
         return None
