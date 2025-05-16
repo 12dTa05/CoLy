@@ -34,7 +34,7 @@ from sumy.summarizers.lsa import LsaSummarizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import KMeans
-from nltk.tokenize import sent_tokenize
+from underthesea import sent_tokenize as vi_sent_tokenize
 from pyvi import ViTokenizer
 import numpy as np
 
@@ -554,6 +554,33 @@ def auto_crawl_all_keywords():
 
             time.sleep(90)
 
+def vietnamese_tokenize(text):
+    """
+    Tách câu tiếng Việt đơn giản dựa trên dấu câu và các quy tắc riêng
+    """
+    if not text:
+        return []
+        
+    # Tiền xử lý - giữ nguyên dấu chấm trong số thập phân và viết tắt
+    text = re.sub(r'(\d+)\.(\d+)', r'\1<dot>\2', text)
+    text = re.sub(r'([A-Za-z])\.([A-Za-z])', r'\1<dot>\2', text)
+    
+    # Tách câu dựa trên các dấu câu kết thúc
+    text = re.sub(r'([.!?;])\s+', r'\1\n', text)
+    text = re.sub(r'([.!?;])\"', r'\1\"\n', text)
+    text = re.sub(r'\.\.\.\s*', '...\n', text)
+    
+    # Xử lý một số trường hợp đặc biệt trong tiếng Việt
+    text = re.sub(r'\n-\s+', '\n', text)  # Loại bỏ dấu gạch đầu dòng sau khi tách câu
+    
+    # Khôi phục dấu chấm trong số thập phân và viết tắt
+    text = text.replace('<dot>', '.')
+    
+    # Tách các câu và loại bỏ khoảng trắng thừa
+    sentences = [s.strip() for s in text.split('\n') if s.strip()]
+    
+    return sentences
+
 def lsa_summarize_with_references(keyword, all_articles):
     """Tổng hợp bài báo sử dụng LSA với tham chiếu chính xác đến nguồn"""
     # Bước 1: Chuẩn bị dữ liệu
@@ -574,7 +601,7 @@ def lsa_summarize_with_references(keyword, all_articles):
             
             # Chia tóm tắt thành các câu riêng lẻ
             try:
-                sentences = sent_tokenize(article.get('summary', ''))
+                sentences = vietnamese_tokenize(article.get('summary', ''))
                 tokenized_sentences = [ViTokenizer.tokenize(s) for s in sentences]
                 article_sentences.append((i, tokenized_sentences))
             except:
