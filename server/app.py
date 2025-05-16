@@ -94,7 +94,7 @@ def connect_to_mongodb():
         print(f"Không thể kết nối với MongoDB: {e}")
         return None
 
-def summarize_content(keyword, content, max_sentences=12): #GeminiAPI
+def summarize_content(keyword, content, max_sentences=20): #GeminiAPI
     if not content or len(content.strip()) < 80:
         return 'None'
     

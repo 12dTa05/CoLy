@@ -105,8 +105,8 @@ class BartphoSummarizer:
             article_ids.append(article['_id'])
             article_sources.add(article['source'])
             
-            if article.get('summary'):
-                article_summaries.append(article.get('summary', ''))
+            if article.get('content'):
+                article_summaries.append(article.get('content', ''))
             
             # Lưu source mapping
             source_mapping[str(i+1)] = {
@@ -119,7 +119,7 @@ class BartphoSummarizer:
             return f"# Tổng hợp tin tức về {keyword}\n\nKhông có đủ bài báo để tổng hợp.", article_ids, list(article_sources), source_mapping
         
         # Kết hợp nội dung của các bài báo
-        combined_content = "\n\n".join([f"Bài {i+1}: {summary}" for i, summary in enumerate(article_summaries)])
+        combined_content = "\n\n".join([f"Bài {i+1}: {content}" for i, content in enumerate(article_summaries)])
         
         # Tạo prompt cho BARTpho
         prompt = f"Tổng hợp các bài báo sau về chủ đề '{keyword}':\n\n{combined_content}"
@@ -144,13 +144,12 @@ class BartphoSummarizer:
             # Tìm các bài báo phù hợp với câu này
             matching_articles = []
             for article_idx, phrases in article_identifiers:
-                matches = sum(1 for phrase in phrases if phrase.lower() in sentence.lower())
-                if matches >= 1:  # Nếu có ít nhất 1 cụm từ khớp
+                if any(phrase.lower() in sentence.lower() for phrase in phrases):
                     matching_articles.append(str(article_idx))
             
             # Thêm tham chiếu vào cuối câu
             if matching_articles:
-                ref_str = ", ".join(sorted(matching_articles))
+                ref_str = ", ".join(sorted(matching_articles)[:3])
                 sentences_with_refs.append(f"{sentence} [{ref_str}]")
             else:
                 sentences_with_refs.append(sentence)
@@ -173,23 +172,24 @@ class GeminiPolisher:
     def polish_and_structure(self, title, summary_with_refs, keyword):
         """Làm đẹp và cấu trúc bài tổng hợp với Gemini"""
         prompt = f"""Hãy cấu trúc lại và làm cho bài viết sau mạch lạc và chuyên nghiệp hơn như một bài báo tổng hợp.                 
-                NỘI DUNG BÀI BÁO: {summary_with_refs}                
-                QUY TẮC TUYỆT ĐỐI PHẢI TUÂN THỦ:
-                1. PHẢI giữ nguyên tất cả các tham chiếu dạng [1], [2], [1, 2], ... xuất hiện ở cuối câu.
-                2. KHÔNG xóa, thêm hoặc sửa đổi BẤT KỲ tham chiếu nào.
-                3. PHẢI chia bài viết thành 3 phần chính: "Tóm tắt chính", "Thông tin chi tiết", và "Kết luận"
-                4. Phần "Tóm tắt chính" nên chiếm khoảng 20% nội dung, "Thông tin chi tiết" khoảng 65%, và "Kết luận" khoảng 15%.
-                5. CHỈ cải thiện cách viết, kết nối ý, làm nội dung mạch lạc hơn mà không thay đổi thông tin.
-                6. Làm rõ thêm những điểm chưa rõ ràng từ tóm tắt ngắn gọn ban đầu.
-                
-                Kết quả cuối cùng PHẢI theo cấu trúc chính xác sau đây:
+            NỘI DUNG BÀI BÁO: {summary_with_refs}                
+            QUY TẮC TUYỆT ĐỐI PHẢI TUÂN THỦ:
+            1. PHẢI giữ nguyên tất cả các tham chiếu dạng [1], [2], [1, 2], ... xuất hiện ở cuối câu.
+            2. KHÔNG đặt tham chiếu ở cuối đoạn văn, mà hãy đặt tham chiếu cho từng câu cụ thể.
+            3. PHẢI làm chi tiết hơn và mở rộng nội dung từ tóm tắt ban đầu.
+            4. PHẢI đảm bảo bao quát nhiều chủ đề CNTT khác nhau, không chỉ giới hạn ở 1-2 chủ đề.
+            5. PHẢI chia bài viết thành 4-5 phần chính, bao gồm "Tóm tắt chính", các phần thông tin chi tiết về các chủ đề khác nhau, và "Kết luận"
+            6. Phần "Tóm tắt chính" nên chiếm khoảng 15% nội dung, các phần thông tin chi tiết khoảng 75%, và "Kết luận" khoảng 10%.
+            7. CHỈ cải thiện cách viết, kết nối ý, làm nội dung mạch lạc hơn mà không thay đổi thông tin.
+
+            Kết quả cuối cùng PHẢI theo cấu trúc chính xác sau đây, không thêm bất kì phần trả lời nào khác:
                 ## Tóm tắt chính
                 [nội dung tóm tắt]
                 ## Thông tin chi tiết
                 [nội dung chi tiết]
                 ## Kết luận
                 [nội dung kết luận]
-            """
+        """
         
         response = self.model.generate_content(prompt)
         polished_content = response.text.strip()

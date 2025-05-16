@@ -108,44 +108,56 @@
           <% 
           // Xử lý nội dung để thay thế tham chiếu [số] thành link
           let processedContent = summary.content;
-          
-          // Tìm tất cả các tham chiếu với regex: \[(\d+)\]
-          // Nhóm 1: số tham chiếu
-          const refRegex = /\[(\d+)\]/g;
-          let match;
-          
-          // Lưu tạm các tham chiếu đã xử lý để tránh thay thế trùng lặp
-          const processedRefs = new Set();
-          
+
           // Tạo bản sao của nội dung để xử lý
           let tempContent = processedContent;
-          
-          while ((match = refRegex.exec(processedContent)) !== null) {
-            const refNum = match[1];
-            
-            // Tránh xử lý trùng lặp
-            if (processedRefs.has(refNum)) continue;
-            processedRefs.add(refNum);
-            
-            // Lấy URL từ source_mapping nếu có
-            let url = '#';
-            if (summary.source_mapping && summary.source_mapping[refNum]) {
-                url = summary.source_mapping[refNum].url;
+
+          // Lưu tạm các tham chiếu đã xử lý để tránh thay thế trùng lặp
+          const processedRefs = new Set();
+
+          // Tìm tất cả các tham chiếu với regex
+          const referenceRegex = /\[(\d+(?:,\s*\d+)*)\]/g;
+          let referenceMatch;
+
+          while ((referenceMatch = referenceRegex.exec(processedContent)) !== null) {
+            const refStr = referenceMatch[1];
+            // Bỏ qua nếu đã xử lý chuỗi tham chiếu này
+            if (processedRefs.has(refStr)) {
+              continue;
             }
+            processedRefs.add(refStr);
             
-            // Tạo mẫu tham chiếu
-            const refPattern = new RegExp(`\\[${refNum}\\]`, 'g');
-            tempContent = tempContent.replace(refPattern, 
-                `<a href="${url}" target="_blank" class="citation-link">[${refNum}]</a>`);
+            // Tách các số tham chiếu thành mảng
+            const refNums = refStr.split(',').map(num => num.trim());
+            
+            // Tạo HTML cho tham chiếu
+            let refHtml = '[';
+            for (let i = 0; i < refNums.length; i++) {
+              const refNum = refNums[i];
+              let url = '#';
+              if (summary.source_mapping && summary.source_mapping[refNum]) {
+                url = summary.source_mapping[refNum].url;
+              }
+              
+              refHtml += '<a href="' + url + '" target="_blank" class="citation-link">' + refNum + '</a>';
+              if (i < refNums.length - 1) {
+                refHtml += ', ';
+              }
+            }
+            refHtml += ']';
+            
+            // Tạo mẫu tham chiếu để thay thế
+            const refPattern = new RegExp('\\[' + refStr.replace(/,/g, ',\\s*') + '\\]', 'g');
+            tempContent = tempContent.replace(refPattern, refHtml);
           }
-          
+
           // Cập nhật nội dung đã xử lý
           processedContent = tempContent;
 
           processedContent = processedContent.replace(/##\s+(.+)$/gm, '<h2 class="text-2xl font-bold my-4">$1</h2>');
-    
+
           processedContent = processedContent.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-          
+                    
           processedContent = processedContent.replace(/\n\n/g, '</p><p class="mb-4">');
           processedContent = '<p class="mb-4">' + processedContent + '</p>';
           %>
